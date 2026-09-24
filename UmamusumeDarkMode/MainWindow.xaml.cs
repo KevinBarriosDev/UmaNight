@@ -1154,7 +1154,9 @@ namespace UmamusumeDarkMode
                 }
                 if (_sidebarRef != null) ncc = Ncc(side, _sidebarRef);
             }
-            bool sidebarPresent = !double.IsNaN(ncc) && ncc >= _settings.SidebarMatchThreshold;
+            // "Conocida" = tenemos referencia y la franja actual tiene contenido (no es un destello liso)
+            bool sidebarKnown = side != null && _sidebarRef != null && Variance(side) > 0.0005;
+            bool sidebarPresent = sidebarKnown && ncc >= _settings.SidebarMatchThreshold;
 
             bool full = edge < _settings.SplitEdgeThreshold && !sidebarPresent;
 
@@ -1174,15 +1176,10 @@ namespace UmamusumeDarkMode
                 catch { }
             }
 
-            if (uniform)
+            // Respaldo: si no hay corte en los bordes y tampoco se puede ver la columna de pestanas,
+            // en una pantalla lisa (destello, fundido) no hay forma de saber el layout: mantener el estado.
+            if (uniform && !sidebarKnown && edge < _settings.SplitEdgeThreshold)
             {
-                // Pantalla lisa y clara (carga en blanco): mantener oscurecidos los laterales.
-                // Pantalla lisa y oscura: dejar el estado como esta.
-                if (_fullWidthDetected && (sideMean > 0.6 || centerMean > 0.6))
-                {
-                    _fullWidthDetected = false;
-                    _tintDirty = true;
-                }
                 _pendingCount = 0;
                 return;
             }
