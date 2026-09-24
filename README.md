@@ -1,98 +1,107 @@
-# Umamusume Dark Mode Overlay
+<h1 align="center">Uma Night</h1>
 
-A lightweight dark mode overlay and audio companion for the PC/DMM client of **Umamusume: Pretty Derby** (`UmamusumePrettyDerby.exe`).
+<p align="center">
+  Overlay oscuro y liviano para <b>Umamusume: Pretty Derby</b> (cliente de PC / Steam).<br>
+  Oscurece los menús blancos sin tocar los archivos del juego.
+</p>
 
-Matches the game window bounds in real time, applies an adjustable black tint without blocking mouse clicks, and provides a floating control bar with master volume control, auto-mute on focus loss, and system tray integration.
-
-![Umamusume Dark Mode Preview](UmamusumeDarkMode/assets/preview.png)
-
----
-
-## Features
-
-- **Floating Control Bar**
-  - Compact bar anchored at the top-center of the game window.
-  - **Opacity Slider (0% – 90%)**: Adjusts screen darkness. Capped at 90% for window stability.
-  - **Master Volume Slider (0% – 100%)**: Controls game master volume directly via Windows Core Audio.
-
-- **Expandable Options Menu**
-  - **Right-click** anywhere on the control bar to toggle settings:
-    - **Mute on focus loss**: Automatically mutes the game when switching to another window or minimizing, and restores audio when returning.
-    - **Autostart with Windows**: Manages a shortcut in Windows Startup (`shell:startup`).
-
-- **System Tray Integration**
-  - **No Taskbar Clutter**: Runs in the background without occupying space on the Windows taskbar.
-  - **Left-Click**: Toggles or brings the control bar to the front.
-  - **Right-Click**: Context menu with **Settings** and **Exit**.
-
-- **Two-Loop Tracking Engine**
-  - **Idle Loop**: Checks for the game process once every 15 seconds when not running.
-  - **Active Loop**: Tracks window position and bounds at ~60 fps while the game is running.
+> ⚠️ **Aviso:** este proyecto fue desarrollado con asistencia de IA (Claude, de Anthropic).
 
 ---
 
-## Download and Usage
+## Créditos: esto es un fork
 
-### Running the Executable
-1. Download the latest `UmamusumeDarkMode.exe` from the **Releases** section.
-2. Place `UmamusumeDarkMode.exe` in any folder of your choice (e.g. on your Desktop).
-3. Run `UmamusumeDarkMode.exe`.
-   - The app icon will appear in your Windows System Tray (notification area).
-   - *(Optional)* Right-click the control bar (or tray icon) and enable **Autostart with Windows**.
+Este proyecto es un **fork de [UmamusumeDarkMode](https://github.com/mayiflex/UmamusumeDarkMode) de [mayiflex](https://github.com/mayiflex)**. Todo el mérito de la idea original y de la base del código es suyo: el overlay que sigue la ventana del juego, el tinte que no bloquea los clics, el control de volumen, el silencio al perder el foco y la integración con la bandeja del sistema.
 
-### Working with the Game
-- You can launch `UmamusumeDarkMode.exe` either before or after starting Umamusume.
-- When the game window is detected, the overlay and control bar attach automatically.
-- When the game is minimized or loses focus, the overlay hides (and audio mutes, if enabled) until focus returns.
+Sobre esa base, en este fork agregamos las mejoras que se describen abajo. El proyecto original se publicó bajo licencia MIT, y este fork mantiene la misma licencia.
 
----
+## Descargo de responsabilidad
 
-## Controls Reference
+- Uma Night **no modifica archivos del juego, no inyecta código y no lee su memoria**. Solo dibuja una capa encima de la ventana, como cualquier otra ventana de Windows.
+- **No se conecta a internet, no recopila datos y no incluye publicidad ni telemetría.** El código completo está en este repositorio.
+- Aun así, **se provee "tal cual", sin garantías de ningún tipo.** Te recomendamos revisar el código por tu cuenta y analizar el ejecutable (por ejemplo, con [VirusTotal](https://www.virustotal.com)) antes de usarlo. Si podés, compilalo vos mismo desde el código.
+- **No nos hacemos responsables** de problemas, virus en copias descargadas de otros sitios, pérdida de datos, sanciones en tu cuenta del juego ni ningún otro daño derivado del uso de este programa. Cualquier herramienta de terceros se usa bajo tu propia responsabilidad.
 
-| Action | Method |
-| :--- | :--- |
-| **Adjust Darkness** | Drag the **Moon Slider** (defaults to 40%). |
-| **Adjust Master Volume** | Drag the **Master Volume Slider**. |
-| **Open Settings Menu** | **Right-click** anywhere on the control bar. |
-| **Toggle Mute on Focus Loss** | Click **Mute on focus loss** in the options menu. |
-| **Toggle Windows Autostart** | Click **Autostart with Windows** in the options menu. |
-| **Tray Menu** | **Right-click** the system tray icon for **Settings** or **Exit**. |
+## Qué hace
 
----
+### Funciones del original
 
-## Configuration
+- Tinte oscuro ajustable (0–90%) que sigue la ventana del juego en tiempo real y no bloquea los clics.
+- Control del volumen del juego (vía Windows Core Audio).
+- Silenciar el juego al cambiar a otra ventana.
+- Icono en la bandeja del sistema e inicio automático con Windows.
 
-Settings are saved locally in JSON format at:
-```text
-%LocalAppData%\UmamusumeDarkMode\settings.json
-```
-Stores your configured opacity, master volume level, and focus-mute preference across sessions.
+### Mejoras de este fork
 
----
+| Mejora | Qué hace |
+| --- | --- |
+| **Solo oscurecer laterales** | En modo horizontal, oscurece el menú de la derecha y el margen izquierdo, y deja la vista central del juego como está. |
+| **Detección de pantalla completa** | En conciertos y carreras, donde el juego ocupa todo el ancho, detecta el cambio de layout y saca el tinte de los costados. Distingue las pantallas de carga ("Connecting") para no confundirlas con un concierto. |
+| **Suavizar destellos** | Mide el brillo real del juego 10 veces por segundo y oscurece un poco más cuando aparece mucho blanco. Sube rápido y baja lento, así que el parpadeo del Log y de los fondos blancos queda amortiguado. Intensidad regulable. |
+| **Nivel propio para el centro** | Un slider aparte para la zona del juego (por defecto 0%). En pantalla completa se aplica a todo. |
+| **Color del tinte** | Negro, Gris cálido, Ámbar o Azul noche. |
+| **Sigue activo al perder el foco** | Si hacés clic en otro monitor, el tinte se mantiene, pero se ubica justo encima del juego para no oscurecer otras ventanas que pongas delante. |
+| **Barra en la bandeja** | La barra de control arranca oculta y se muestra u oculta desde el icono de la bandeja o con el botón "—". |
+| **Atajos de teclado** | Ver la tabla de abajo. |
+| **Instancia única** | Si se abre dos veces, la segunda copia se cierra sola. |
+| **Interfaz en español** | |
 
-## Building from Source
+### Atajos
 
-### Prerequisites
-- Windows 10 / 11
-- [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+| Atajo | Acción |
+| --- | --- |
+| `Ctrl+Alt+↑` / `Ctrl+Alt+↓` | Laterales ±5% |
+| `Ctrl+Alt+Shift+↑` / `Ctrl+Alt+Shift+↓` | Centro ±5% |
+| `Ctrl+Alt+D` | Activar o desactivar "solo laterales" |
+| `Ctrl+Alt+H` | Pausar o reanudar el oscurecido |
 
-### Build Command
+## Cómo funciona por dentro
+
+- **Laterales:** el overlay dibuja un rectángulo oscuro con un "agujero" donde está la vista del juego. La posición del agujero se define en porcentajes del tamaño de la ventana (`HoleLeftPct`, `HoleWidthPct`…), así que se puede calibrar desde la configuración.
+- **Detección de pantalla completa:** cada 0,4 s se miran los dos bordes de la vista central. En el menú hay un corte vertical marcado entre el juego y los laterales; en un concierto la imagen sigue de largo. Para no confundirse con pantallas lisas (cargas y transiciones), también mide qué tan uniformes son el centro y los costados. Necesita varias lecturas seguidas antes de cambiar de modo, para no parpadear.
+- **Medir sin verse a sí mismo:** las ventanas del overlay se excluyen de las capturas de pantalla (`WDA_EXCLUDEFROMCAPTURE`). Así la app puede mirar el juego sin su propio tinte encima. Como efecto secundario, **el oscurecido no aparece en capturas ni en OBS/Discord**, aunque vos sí lo veas en el monitor.
+- **Suavizado:** el brillo se mide sobre una captura reducida a 64×36 píxeles, y el nivel del tinte se acerca al objetivo con curvas exponenciales distintas para subir y para bajar.
+
+## Instalación
+
+### Compilar desde el código
+
+Requisitos: Windows 10/11 y el [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
+
 ```powershell
-git clone https://github.com/your-username/UmamusumeDarkMode.git
-cd UmamusumeDarkMode
-dotnet build -c Release
+git clone https://github.com/KevinBarriosDev/UmaNight.git
+cd UmaNight
+dotnet publish UmamusumeDarkMode\UmamusumeDarkMode.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o "$env:LOCALAPPDATA\Programs\UmaNight"
 ```
 
-### Publish Single-File Executable
-```powershell
-dotnet publish UmamusumeDarkMode\UmamusumeDarkMode.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true
-```
-The output binary will be located in:
-```text
-UmamusumeDarkMode\bin\Release\net8.0-windows\win-x64\publish\UmamusumeDarkMode.exe
-```
+El ejecutable queda en `%LocalAppData%\Programs\UmaNight\UmaNight.exe`. Se necesita el **.NET 8 Desktop Runtime** para ejecutarlo.
 
----
+### Uso
 
-## License
-MIT License
+1. Abrí `UmaNight.exe`. Queda en la bandeja del sistema.
+2. Clic izquierdo en el icono para mostrar u ocultar la barra; clic derecho para el menú.
+3. Clic derecho sobre la barra para ver todas las opciones.
+
+## Configuración
+
+Se guarda en `%LocalAppData%\UmaNight\settings.json`. Algunos valores que se pueden ajustar a mano (con la app cerrada):
+
+| Clave | Para qué sirve |
+| --- | --- |
+| `HoleLeftPct`, `HoleWidthPct`, `HoleTopPct`, `HoleHeightPct` | Posición de la zona central sin oscurecer, en % de la ventana. Calibrado para 2560×1440. |
+| `SplitEdgeThreshold` | Sensibilidad de la detección de pantalla completa (por defecto 0.12). |
+| `UniformStdThreshold` | Umbral para considerar una pantalla "lisa", como una carga (por defecto 0.05). |
+| `DebugDetect` | `true` para registrar las mediciones en `detect.log`. |
+
+## Ideas y sugerencias
+
+¿Tenés una idea, un ajuste o encontraste un problema? Abrí un [issue](https://github.com/KevinBarriosDev/UmaNight/issues) y lo vemos. También podés hacer tu propio fork y modificarlo como quieras.
+
+## Licencia
+
+MIT, igual que el [proyecto original](https://github.com/mayiflex/UmamusumeDarkMode).
+
+- Copyright del código original: mayiflex.
+- Modificaciones de este fork: Kevin Barrios.
+
+Umamusume: Pretty Derby es marca de Cygames, Inc. Este proyecto no está afiliado ni respaldado por Cygames.

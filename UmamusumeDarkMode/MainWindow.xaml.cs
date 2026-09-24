@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -44,6 +44,34 @@ namespace UmamusumeDarkMode
         private const int HTCLIENT = 1;
 
         private const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
+
+        // Hotkey Ctrl+Alt+D: alterna "solo laterales"
+        private const int WM_HOTKEY = 0x0312;
+        private const uint MOD_ALT = 0x0001;
+        private const uint MOD_CONTROL = 0x0002;
+        private const uint MOD_NOREPEAT = 0x4000;
+        private const uint VK_D = 0x44;
+        private const int HOTKEY_ID_SIDES = 0xB001;
+
+        private const uint GW_HWNDPREV = 3;
+        private const long WS_EX_TOPMOST = 0x00000008;
+        private static readonly IntPtr HWND_TOP_Z = IntPtr.Zero;
+
+        // Excluye nuestras ventanas de las capturas de pantalla (para poder "ver" el juego sin el tinte)
+        private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+        private const int SRCCOPY = 0x00CC0020;
+        private const int HALFTONE = 4;
+
+        // Hotkeys extra
+        private const uint MOD_SHIFT = 0x0004;
+        private const uint VK_UP = 0x26;
+        private const uint VK_DOWN = 0x28;
+        private const uint VK_H = 0x48;
+        private const int HOTKEY_SIDES_UP = 0xB002;
+        private const int HOTKEY_SIDES_DOWN = 0xB003;
+        private const int HOTKEY_CENTER_UP = 0xB004;
+        private const int HOTKEY_CENTER_DOWN = 0xB005;
+        private const int HOTKEY_PAUSE = 0xB006;
 
         private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
         private const uint SWP_NOSIZE = 0x0001;
@@ -194,6 +222,51 @@ namespace UmamusumeDarkMode
 
         private static readonly int WM_TASKBARCREATED = RegisterWindowMessage("TaskbarCreated");
 
+        [DllImport("user32.dll")]
+        private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
+
+        [DllImport("user32.dll")]
+        private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int cx, int cy);
+
+        [DllImport("gdi32.dll")]
+        private static extern IntPtr SelectObject(IntPtr hdc, IntPtr h);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr ho);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool BitBlt(IntPtr hdc, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, int rop);
+
+        [DllImport("gdi32.dll")]
+        private static extern uint GetPixel(IntPtr hdc, int x, int y);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool StretchBlt(IntPtr hdcDest, int xDest, int yDest, int wDest, int hDest, IntPtr hdcSrc, int xSrc, int ySrc, int wSrc, int hSrc, int rop);
+
+        [DllImport("gdi32.dll")]
+        private static extern int SetStretchBltMode(IntPtr hdc, int mode);
+
         #endregion
 
         private readonly DispatcherTimer _detectionTimer;
@@ -208,6 +281,31 @@ namespace UmamusumeDarkMode
         private readonly AppSettings _settings;
         private ControlBarWindow? _controlBar;
         private IntPtr _controlBarHwnd = IntPtr.Zero;
+
+        // Estado de la geometria del tinte (para no recalcular a 60 fps)
+        private double _lastTintW = -1;
+        private double _lastTintH = -1;
+        private bool _tintDirty = true;
+
+        // Deteccion de "pantalla completa" (conciertos, carreras): sin laterales
+        private bool _fullWidthDetected = false;
+        private int _pendingCount = 0;
+        private bool _wasFocused = false;
+        private readonly Stopwatch _focusGrace = Stopwatch.StartNew();
+        private readonly Stopwatch _detectWatch = Stopwatch.StartNew();
+
+        // Tinte: pinceles animados, niveles actuales y extra por destellos
+        private enum TintMode { All, Split, GameOnly }
+        private TintMode _mode = TintMode.All;
+        private readonly SolidColorBrush _sidesBrush = new SolidColorBrush(Colors.Transparent);
+        private readonly SolidColorBrush _centerBrush = new SolidColorBrush(Colors.Transparent);
+        private double _sidesCur = 0, _centerCur = 0;
+        private double _sidesExtra = 0, _centerExtra = 0;
+        private bool _paused = false;
+        private readonly Stopwatch _frameWatch = Stopwatch.StartNew();
+        private readonly Stopwatch _sampleWatch = Stopwatch.StartNew();
+
+        private static readonly string[] TintNames = { "Negro", "Gris c\u00E1lido", "\u00C1mbar", "Azul noche" };
 
         public MainWindow()
         {
@@ -235,10 +333,16 @@ namespace UmamusumeDarkMode
             };
 
             _controlBar = new ControlBarWindow();
+            _controlBar.Left = 0;
+            _controlBar.Top = 0;
             _controlBar.OpacitySlider.Value = _settings.Opacity;
             _controlBar.OpacityText.Text = $"{_settings.Opacity}%";
-            byte initialAlpha = (byte)Math.Round(255 * (_settings.Opacity / 100.0));
-            Background = new SolidColorBrush(Color.FromArgb(initialAlpha, 0, 0, 0));
+            TintPath.Fill = _sidesBrush;
+            CenterPath.Fill = _centerBrush;
+            _sidesCur = _settings.Opacity / 100.0;
+            _centerCur = _settings.CenterOpacity / 100.0;
+            if (_settings.TintColor < 0 || _settings.TintColor >= TintNames.Length) _settings.TintColor = 0;
+            ApplyBrushes();
 
             _controlBar.VolumeSlider.Value = (int)Math.Round(_savedVolume * 100);
             _controlBar.VolumeText.Text = $"{(int)_controlBar.VolumeSlider.Value}%";
@@ -253,7 +357,57 @@ namespace UmamusumeDarkMode
             _controlBar.AutostartCheckbox.Checked += (s, e) => OnAutostartSettingChanged(true);
             _controlBar.AutostartCheckbox.Unchecked += (s, e) => OnAutostartSettingChanged(false);
 
+            _controlBar.SidesOnlyCheckbox.IsChecked = _settings.SidesOnly;
+            _controlBar.HideRequested += () => SetControlBarVisible(false);
+
+            // (3) Nivel del centro
+            _controlBar.CenterSlider.Value = _settings.CenterOpacity;
+            _controlBar.CenterText.Text = $"{_settings.CenterOpacity}%";
+            _controlBar.CenterSlider.ValueChanged += (s, e) =>
+            {
+                int p = Math.Min(90, (int)Math.Round(e.NewValue));
+                _controlBar!.CenterText.Text = $"{p}%";
+                _settings.CenterOpacity = p;
+                _settings.Save();
+                if (!_settings.AdaptiveFlash) { _centerCur = p / 100.0; ApplyBrushes(); }
+            };
+
+            // (1) Suavizar destellos
+            _controlBar.AdaptiveCheckbox.IsChecked = _settings.AdaptiveFlash;
+            _controlBar.AdaptiveCheckbox.Checked += (s, e) => { _settings.AdaptiveFlash = true; _settings.Save(); };
+            _controlBar.AdaptiveCheckbox.Unchecked += (s, e) =>
+            {
+                _settings.AdaptiveFlash = false;
+                _settings.Save();
+                _sidesExtra = 0; _centerExtra = 0;
+                _sidesCur = _settings.Opacity / 100.0;
+                _centerCur = _settings.CenterOpacity / 100.0;
+                ApplyBrushes();
+            };
+            _controlBar.StrengthSlider.Value = _settings.AdaptiveStrength;
+            _controlBar.StrengthText.Text = $"{_settings.AdaptiveStrength}%";
+            _controlBar.StrengthSlider.ValueChanged += (s, e) =>
+            {
+                int p = (int)Math.Round(e.NewValue);
+                _controlBar!.StrengthText.Text = $"{p}%";
+                _settings.AdaptiveStrength = p;
+                _settings.Save();
+            };
+
+            // (2) Color del tinte
+            _controlBar.SetColorName(TintNames[_settings.TintColor]);
+            _controlBar.ColorCycleRequested += () =>
+            {
+                _settings.TintColor = (_settings.TintColor + 1) % TintNames.Length;
+                _settings.Save();
+                _controlBar!.SetColorName(TintNames[_settings.TintColor]);
+                ApplyBrushes();
+            };
+            _controlBar.SidesOnlyCheckbox.Checked += (s, e) => SetSidesOnly(true);
+            _controlBar.SidesOnlyCheckbox.Unchecked += (s, e) => SetSidesOnly(false);
+
             _controlBarHwnd = new WindowInteropHelper(_controlBar).EnsureHandle();
+            SetWindowDisplayAffinity(_controlBarHwnd, WDA_EXCLUDEFROMCAPTURE);
 
             // Loop 1: Checks for the game process every 15 seconds when not running
             _detectionTimer = new DispatcherTimer(DispatcherPriority.Background)
@@ -292,12 +446,34 @@ namespace UmamusumeDarkMode
             HwndSource? source = HwndSource.FromHwnd(_hwnd);
             source?.AddHook(WndProc);
 
+            RegisterHotKey(_hwnd, HOTKEY_ID_SIDES, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_D);
+            SetWindowDisplayAffinity(_hwnd, WDA_EXCLUDEFROMCAPTURE);
+            RegisterHotKey(_hwnd, HOTKEY_SIDES_UP, MOD_CONTROL | MOD_ALT, VK_UP);
+            RegisterHotKey(_hwnd, HOTKEY_SIDES_DOWN, MOD_CONTROL | MOD_ALT, VK_DOWN);
+            RegisterHotKey(_hwnd, HOTKEY_CENTER_UP, MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_UP);
+            RegisterHotKey(_hwnd, HOTKEY_CENTER_DOWN, MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_DOWN);
+            RegisterHotKey(_hwnd, HOTKEY_PAUSE, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_H);
+
             InitializeTrayIcon();
         }
 
         private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
         {
-            if (msg == WM_TASKBARCREATED)
+            if (msg == WM_HOTKEY && wParam.ToInt32() != HOTKEY_ID_SIDES)
+            {
+                HandleHotkey(wParam.ToInt32());
+                handled = true;
+            }
+            else if (msg == WM_HOTKEY && wParam.ToInt32() == HOTKEY_ID_SIDES)
+            {
+                if (_controlBar != null)
+                {
+                    // Dispara Checked/Unchecked -> SetSidesOnly
+                    _controlBar.SidesOnlyCheckbox.IsChecked = !_settings.SidesOnly;
+                }
+                handled = true;
+            }
+            else if (msg == WM_TASKBARCREATED)
             {
                 // Explorer restarted: re-create tray icon
                 if (_trayIconData.hWnd != IntPtr.Zero)
@@ -336,7 +512,7 @@ namespace UmamusumeDarkMode
                 uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP,
                 uCallbackMessage = WM_TRAYICON,
                 hIcon = _hTrayIcon,
-                szTip = "Umamusume Dark Mode"
+                szTip = "Uma Night"
             };
 
             Shell_NotifyIcon(NIM_ADD, ref _trayIconData);
@@ -346,7 +522,7 @@ namespace UmamusumeDarkMode
         {
             try
             {
-                string icoPath = Path.Combine(AppContext.BaseDirectory, "assets", "umamusumedarkmode.ico");
+                string icoPath = Path.Combine(AppContext.BaseDirectory, "assets", "app.ico");
                 if (File.Exists(icoPath))
                 {
                     ExtractIconEx(icoPath, 0, out _, out IntPtr hSmall, 1);
@@ -390,22 +566,35 @@ namespace UmamusumeDarkMode
 
             try
             {
-                AppendMenu(hMenu, MF_STRING, 1001, "Settings");
+                AppendMenu(hMenu, MF_STRING, 1003, _settings.ShowControlBar ? "Ocultar barra" : "Mostrar barra");
+                AppendMenu(hMenu, MF_STRING | (_settings.SidesOnly ? 0x0008u : 0u), 1004, "Solo oscurecer laterales");
+                AppendMenu(hMenu, MF_STRING | (_paused ? 0x0008u : 0u), 1005, "Pausar oscurecido (Ctrl+Alt+H)");
+                AppendMenu(hMenu, MF_STRING, 1001, "Configuraci\u00F3n");
                 AppendMenu(hMenu, MF_SEPARATOR, 0, string.Empty);
-                AppendMenu(hMenu, MF_STRING, 1002, "Exit");
+                AppendMenu(hMenu, MF_STRING, 1002, "Salir");
 
                 uint cmd = TrackPopupMenuEx(hMenu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.X, pt.Y, _hwnd, IntPtr.Zero);
 
-                if (cmd == 1001)
+                if (cmd == 1005)
                 {
+                    TogglePause();
+                }
+                else if (cmd == 1003)
+                {
+                    SetControlBarVisible(!_settings.ShowControlBar);
+                }
+                else if (cmd == 1004)
+                {
+                    if (_controlBar != null) _controlBar.SidesOnlyCheckbox.IsChecked = !_settings.SidesOnly;
+                }
+                else if (cmd == 1001)
+                {
+                    _settings.ShowControlBar = true;
+                    _settings.Save();
                     if (_controlBar != null)
                     {
-                        if (_controlBar.Visibility != Visibility.Visible)
-                        {
-                            _controlBar.Show();
-                        }
                         _controlBar.ToggleExpanded();
-                        _controlBar.Activate();
+                        FocusGame();
                     }
                 }
                 else if (cmd == 1002)
@@ -419,25 +608,48 @@ namespace UmamusumeDarkMode
             }
         }
 
+        private void SetControlBarVisible(bool visible)
+        {
+            _settings.ShowControlBar = visible;
+            _settings.Save();
+
+            if (_controlBar == null) return;
+            if (!visible)
+            {
+                _controlBar.Visibility = Visibility.Hidden;
+            }
+            else if (_targetProcess != null && !_targetProcess.HasExited)
+            {
+                FocusGame();
+            }
+        }
+
+        private void FocusGame()
+        {
+            if (_targetHwnd != IntPtr.Zero && IsWindow(_targetHwnd))
+            {
+                SetForegroundWindow(_hwnd);
+                SetForegroundWindow(_targetHwnd);
+            }
+        }
+
         private void ToggleControlBarFromTray()
         {
-            if (_controlBar != null)
-            {
-                if (_controlBar.Visibility == Visibility.Visible)
-                {
-                    _controlBar.ToggleExpanded();
-                }
-                else
-                {
-                    _controlBar.Show();
-                    _controlBar.Activate();
-                }
-            }
+            SetControlBarVisible(!_settings.ShowControlBar);
         }
 
         protected override void OnClosed(EventArgs e)
         {
             RemoveTrayIcon();
+
+            if (_hwnd != IntPtr.Zero)
+            {
+                foreach (int id in new[] { HOTKEY_ID_SIDES, HOTKEY_SIDES_UP, HOTKEY_SIDES_DOWN, HOTKEY_CENTER_UP, HOTKEY_CENTER_DOWN, HOTKEY_PAUSE })
+                {
+                    UnregisterHotKey(_hwnd, id);
+                }
+            }
+            _settings.SaveNow();
 
             // Always restore game volume before closing the app so it is never left at 0%
             if (_targetProcess != null && !_targetProcess.HasExited)
@@ -514,13 +726,13 @@ namespace UmamusumeDarkMode
                 return;
             }
 
-            // Check if Umamusume or our control bar window is currently in focus
             IntPtr fgHwnd = GetForegroundWindow();
             GetWindowThreadProcessId(fgHwnd, out uint fgPid);
             bool isGameInFocus = (fgPid == _targetProcess.Id || fgHwnd == _hwnd || (_controlBarHwnd != IntPtr.Zero && fgHwnd == _controlBarHwnd));
+            bool isMinimized = IsIconic(_targetHwnd);
 
-            // If Umamusume lost focus or is minimized, hide overlay and control bar, and mute game audio if enabled
-            if (!isGameInFocus || IsIconic(_targetHwnd))
+            // Audio: mute al perder foco (si esta habilitado) / restaurar al volver
+            if (!isGameInFocus || isMinimized)
             {
                 if (_settings.MuteOnFocusLoss && !_isMutedByFocusLoss)
                 {
@@ -534,35 +746,18 @@ namespace UmamusumeDarkMode
                     AudioManager.SetApplicationVolume(_targetProcess.Id, 0.0f);
                     _isMutedByFocusLoss = true;
                 }
-
-                if (Visibility != Visibility.Hidden)
-                {
-                    Visibility = Visibility.Hidden;
-                }
-                if (_controlBar != null && _controlBar.Visibility != Visibility.Hidden)
-                {
-                    _controlBar.Visibility = Visibility.Hidden;
-                }
-                return;
             }
-
-            // Game gained focus: restore original volume
-            if (_isMutedByFocusLoss)
+            else if (_isMutedByFocusLoss)
             {
                 AudioManager.SetApplicationVolume(_targetProcess.Id, _savedVolume);
                 _isMutedByFocusLoss = false;
             }
 
-            if (!TryGetWindowBounds(_targetHwnd, out RECT rect))
+            // Minimizado o sin bounds: ocultar todo
+            if (isMinimized || !TryGetWindowBounds(_targetHwnd, out RECT rect))
             {
-                if (Visibility != Visibility.Hidden)
-                {
-                    Visibility = Visibility.Hidden;
-                }
-                if (_controlBar != null && _controlBar.Visibility != Visibility.Hidden)
-                {
-                    _controlBar.Visibility = Visibility.Hidden;
-                }
+                if (Visibility != Visibility.Hidden) Visibility = Visibility.Hidden;
+                if (_controlBar != null && _controlBar.Visibility != Visibility.Hidden) _controlBar.Visibility = Visibility.Hidden;
                 return;
             }
 
@@ -581,13 +776,41 @@ namespace UmamusumeDarkMode
             if (Math.Abs(Width - targetWidth) > 0.5) Width = targetWidth;
             if (Math.Abs(Height - targetHeight) > 0.5) Height = targetHeight;
 
+            // Solo medir con el juego en foco: si hay otra ventana encima, la captura la veria a ella
+            // Al volver al juego (Alt+Tab, clic) esperar 1 s: los primeros cuadros suelen ser transiciones
+            if (isGameInFocus && !_wasFocused) { _focusGrace.Restart(); _pendingCount = 0; }
+            _wasFocused = isGameInFocus;
+            if (isGameInFocus && _focusGrace.ElapsedMilliseconds > 1000) DetectLayout(rect);
+            UpdateTintGeometry(targetWidth, targetHeight);
+            UpdateAdaptive(rect, isGameInFocus);
+
             if (Visibility != Visibility.Visible)
             {
                 Visibility = Visibility.Visible;
             }
 
-            // Position and show the compact ControlBar
-            if (_controlBar != null)
+            // Juego visible pero sin foco (ej: clic en la otra pantalla):
+            // se mantiene el tinte, sin topmost y justo encima del juego,
+            // asi no tapa ventanas que pongas delante del juego.
+            if (!isGameInFocus)
+            {
+                if (_controlBar != null && _controlBar.Visibility != Visibility.Hidden)
+                {
+                    _controlBar.Visibility = Visibility.Hidden;
+                }
+                KeepOverlayJustAboveGame();
+                return;
+            }
+
+            if (!Topmost) Topmost = true;
+
+            if (_controlBar != null && !_settings.ShowControlBar && _controlBar.Visibility != Visibility.Hidden)
+            {
+                _controlBar.Visibility = Visibility.Hidden;
+            }
+
+            // Position and show the compact ControlBar (solo si el usuario la tiene visible)
+            if (_controlBar != null && _settings.ShowControlBar)
             {
                 double barWidth = _controlBar.ActualWidth > 0 ? _controlBar.ActualWidth : 235;
                 double barLeft = targetLeft + (targetWidth - barWidth) / 2.0;
@@ -615,6 +838,402 @@ namespace UmamusumeDarkMode
             }
         }
 
+        /// <summary>
+        /// Deja el overlay (no topmost) inmediatamente por encima del juego en el orden Z.
+        /// </summary>
+        private void KeepOverlayJustAboveGame()
+        {
+            if (_hwnd == IntPtr.Zero) return;
+
+            if (Topmost) Topmost = false;
+
+            IntPtr above = GetWindow(_targetHwnd, GW_HWNDPREV);
+            if (above == _hwnd) return;
+
+            // SetWindowPos coloca NUESTRA ventana debajo de 'insertAfter'.
+            // Si la ventana de arriba es topmost, usamos el tope de la banda normal.
+            IntPtr insertAfter = above;
+            if (above == IntPtr.Zero || (GetWindowLongPtr(above, GWL_EXSTYLE).ToInt64() & WS_EX_TOPMOST) != 0)
+            {
+                insertAfter = HWND_TOP_Z;
+            }
+
+            SetWindowPos(_hwnd, insertAfter, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+
+        /// <summary>
+        /// Dibuja el tinte. Tres modos:
+        ///  All      = todo con el nivel principal (modo clasico o ventana vertical)
+        ///  Split    = laterales con el nivel principal + centro con su propio nivel
+        ///  GameOnly = juego a pantalla completa (conciertos/carreras): todo con el nivel del centro
+        /// </summary>
+        private void UpdateTintGeometry(double w, double h)
+        {
+            if (double.IsNaN(w) || double.IsNaN(h) || w <= 0 || h <= 0) return;
+
+            bool sides = _settings.SidesOnly && w > h;
+            TintMode mode = !sides ? TintMode.All : (_fullWidthDetected ? TintMode.GameOnly : TintMode.Split);
+
+            if (!_tintDirty && mode == _mode &&
+                Math.Abs(w - _lastTintW) < 0.5 && Math.Abs(h - _lastTintH) < 0.5)
+            {
+                return;
+            }
+
+            _lastTintW = w;
+            _lastTintH = h;
+            _mode = mode;
+            _tintDirty = false;
+
+            var full = new RectangleGeometry(new Rect(0, 0, w, h));
+            full.Freeze();
+
+            switch (mode)
+            {
+                case TintMode.All:
+                    TintPath.Data = full;
+                    CenterPath.Data = null;
+                    break;
+                case TintMode.GameOnly:
+                    TintPath.Data = null;
+                    CenterPath.Data = full;
+                    break;
+                default:
+                    var hole = new RectangleGeometry(new Rect(
+                        w * _settings.HoleLeftPct / 100.0,
+                        h * _settings.HoleTopPct / 100.0,
+                        w * _settings.HoleWidthPct / 100.0,
+                        h * _settings.HoleHeightPct / 100.0));
+                    hole.Freeze();
+                    var sidesGeo = new CombinedGeometry(GeometryCombineMode.Exclude, full, hole);
+                    sidesGeo.Freeze();
+                    TintPath.Data = sidesGeo;
+                    CenterPath.Data = hole;
+                    break;
+            }
+        }
+
+        // ================= (1) Suavizar destellos =================
+
+        /// <summary>
+        /// Cada frame: mide el brillo (cada 100 ms) y acerca el nivel actual al objetivo.
+        /// Sube rapido (0.12 s) y baja lento (0.9 s): los flashes blancos quedan amortiguados.
+        /// </summary>
+        private void UpdateAdaptive(RECT rect, bool focused)
+        {
+            double dt = Math.Min(0.5, _frameWatch.Elapsed.TotalSeconds);
+            _frameWatch.Restart();
+
+            if (_settings.AdaptiveFlash && focused && _sampleWatch.ElapsedMilliseconds >= 100)
+            {
+                _sampleWatch.Restart();
+                if (MeasureLuminance(rect, out double lumSides, out double lumCenter, out double lumAll))
+                {
+                    double k = _settings.AdaptiveStrength / 100.0;
+                    switch (_mode)
+                    {
+                        case TintMode.All:
+                            _sidesExtra = FlashExtra(lumAll) * k; _centerExtra = 0; break;
+                        case TintMode.GameOnly:
+                            _sidesExtra = 0; _centerExtra = FlashExtra(lumAll) * k; break;
+                        default:
+                            _sidesExtra = FlashExtra(lumSides) * k; _centerExtra = FlashExtra(lumCenter) * k; break;
+                    }
+                }
+            }
+
+            if (!_settings.AdaptiveFlash) { _sidesExtra = 0; _centerExtra = 0; }
+
+            double sBase = _settings.Opacity / 100.0;
+            double cBase = _settings.CenterOpacity / 100.0;
+            // El extra solo se aplica a zonas que tienen tinte activado (nivel > 0)
+            double sTarget = sBase > 0 ? Math.Min(0.9, sBase + _sidesExtra) : 0;
+            double cTarget = cBase > 0 ? Math.Min(0.9, cBase + _centerExtra) : 0;
+
+            _sidesCur = Approach(_sidesCur, sTarget, dt);
+            _centerCur = Approach(_centerCur, cTarget, dt);
+            ApplyBrushes();
+        }
+
+        // 0 hasta 55% de brillo, sube lineal hasta 1 en 90% de brillo
+        private static double FlashExtra(double lum)
+        {
+            return Math.Clamp((lum - 0.55) / 0.35, 0.0, 1.0);
+        }
+
+        private double Approach(double cur, double target, double dt)
+        {
+            if (!_settings.AdaptiveFlash) return target;
+            double tau = target > cur ? 0.12 : 0.9;
+            return cur + (target - cur) * (1.0 - Math.Exp(-dt / tau));
+        }
+
+        /// <summary>
+        /// Captura el juego reducido a 64x36 (el overlay esta excluido de la captura)
+        /// y calcula el brillo medio de laterales, centro y total.
+        /// </summary>
+        private bool MeasureLuminance(RECT rect, out double lumSides, out double lumCenter, out double lumAll)
+        {
+            lumSides = lumCenter = lumAll = 0;
+            if (rect.Width <= 0 || rect.Height <= 0) return false;
+
+            const int W = 64, H = 36;
+            double cl = _settings.HoleLeftPct / 100.0;
+            double cr = (_settings.HoleLeftPct + _settings.HoleWidthPct) / 100.0;
+
+            IntPtr sdc = GetDC(IntPtr.Zero);
+            IntPtr mdc = CreateCompatibleDC(sdc);
+            IntPtr bmp = CreateCompatibleBitmap(sdc, W, H);
+            IntPtr old = SelectObject(mdc, bmp);
+            try
+            {
+                SetStretchBltMode(mdc, HALFTONE);
+                if (!StretchBlt(mdc, 0, 0, W, H, sdc, rect.Left, rect.Top, rect.Width, rect.Height, SRCCOPY)) return false;
+
+                double sumS = 0, sumC = 0; int nS = 0, nC = 0;
+                for (int x = 0; x < W; x++)
+                {
+                    double fx = (x + 0.5) / W;
+                    bool isCenter = fx >= cl && fx < cr;
+                    for (int y = 0; y < H; y++)
+                    {
+                        uint p = GetPixel(mdc, x, y);
+                        double l = (0.2126 * (p & 0xFF) + 0.7152 * ((p >> 8) & 0xFF) + 0.0722 * ((p >> 16) & 0xFF)) / 255.0;
+                        if (isCenter) { sumC += l; nC++; } else { sumS += l; nS++; }
+                    }
+                }
+                lumSides = nS > 0 ? sumS / nS : 0;
+                lumCenter = nC > 0 ? sumC / nC : 0;
+                lumAll = (sumS + sumC) / Math.Max(1, nS + nC);
+                return true;
+            }
+            finally
+            {
+                SelectObject(mdc, old);
+                DeleteObject(bmp);
+                DeleteDC(mdc);
+                ReleaseDC(IntPtr.Zero, sdc);
+            }
+        }
+
+        // ================= (2) Color del tinte =================
+
+        private (byte r, byte g, byte b) TintRgb()
+        {
+            switch (_settings.TintColor)
+            {
+                case 1: return (40, 32, 24);   // Gris calido
+                case 2: return (70, 40, 0);    // Ambar
+                case 3: return (8, 14, 42);    // Azul noche
+                default: return (0, 0, 0);     // Negro
+            }
+        }
+
+        private void ApplyBrushes()
+        {
+            var (r, g, b) = TintRgb();
+            byte sa = _paused ? (byte)0 : (byte)Math.Round(255 * Math.Clamp(_sidesCur, 0, 0.9));
+            byte ca = _paused ? (byte)0 : (byte)Math.Round(255 * Math.Clamp(_centerCur, 0, 0.9));
+            var sc = Color.FromArgb(sa, r, g, b);
+            var cc = Color.FromArgb(ca, r, g, b);
+            if (_sidesBrush.Color != sc) _sidesBrush.Color = sc;
+            if (_centerBrush.Color != cc) _centerBrush.Color = cc;
+        }
+
+        // ================= (4) Atajos =================
+
+        private void HandleHotkey(int id)
+        {
+            if (_controlBar == null) return;
+            switch (id)
+            {
+                case HOTKEY_SIDES_UP: Nudge(_controlBar.OpacitySlider, +5); break;
+                case HOTKEY_SIDES_DOWN: Nudge(_controlBar.OpacitySlider, -5); break;
+                case HOTKEY_CENTER_UP: Nudge(_controlBar.CenterSlider, +5); break;
+                case HOTKEY_CENTER_DOWN: Nudge(_controlBar.CenterSlider, -5); break;
+                case HOTKEY_PAUSE: TogglePause(); break;
+            }
+        }
+
+        private static void Nudge(Slider slider, double delta)
+        {
+            slider.Value = Math.Clamp(slider.Value + delta, slider.Minimum, slider.Maximum);
+        }
+
+        private void TogglePause()
+        {
+            _paused = !_paused;
+            ApplyBrushes();
+        }
+
+
+        /// <summary>
+        /// Cada ~400 ms mira los dos bordes de la vista central del juego.
+        /// En el layout con menu lateral hay un "corte" vertical marcado en esos bordes;
+        /// en pantalla completa (conciertos, carreras) la imagen sigue de largo.
+        /// </summary>
+        private void DetectLayout(RECT rect)
+        {
+            if (!_settings.SidesOnly || rect.Width <= rect.Height) return;
+            if (_detectWatch.ElapsedMilliseconds < 400) return;
+            _detectWatch.Restart();
+
+            int xl = rect.Left + (int)Math.Round(rect.Width * _settings.HoleLeftPct / 100.0);
+            int xr = rect.Left + (int)Math.Round(rect.Width * (_settings.HoleLeftPct + _settings.HoleWidthPct) / 100.0);
+
+            double rl = EdgeHitRatio(xl, rect.Top, rect.Height);
+            double rr = EdgeHitRatio(xr, rect.Top, rect.Height);
+            bool full = Math.Max(rl, rr) < _settings.SplitEdgeThreshold;
+
+            // Pantallas de carga / transiciones: laterales casi lisos (todo blanco o todo negro).
+            // Ahi no se puede saber el layout por los bordes.
+            SideStats(rect, out double sideMean, out double sideStd, out double centerMean, out double centerStd);
+            // Carga ("Connecting") o transicion: el centro queda liso (todo blanco) aunque el menu siga a la derecha
+            bool uniform = sideStd < _settings.UniformStdThreshold || centerStd < _settings.UniformStdThreshold;
+
+            if (_settings.DebugDetect)
+            {
+                try
+                {
+                    string log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UmaNight", "detect.log");
+                    File.AppendAllText(log, $"{DateTime.Now:HH:mm:ss.fff} L={rl:F2} R={rr:F2} std={sideStd:F3} mean={sideMean:F2} cstd={centerStd:F3} cmean={centerMean:F2} uniform={uniform} full={full} actual={_fullWidthDetected}\n");
+                }
+                catch { }
+            }
+
+            if (uniform)
+            {
+                // Pantalla lisa y clara (carga en blanco): mantener oscurecidos los laterales.
+                // Pantalla lisa y oscura: dejar el estado como esta.
+                if (_fullWidthDetected && (sideMean > 0.6 || centerMean > 0.6))
+                {
+                    _fullWidthDetected = false;
+                    _tintDirty = true;
+                }
+                _pendingCount = 0;
+                return;
+            }
+
+            if (full == _fullWidthDetected)
+            {
+                _pendingCount = 0;
+                return;
+            }
+
+            // Histeresis: 2 lecturas seguidas iguales antes de cambiar (evita parpadeos)
+            if (++_pendingCount >= (full ? 3 : 2))
+            {
+                _fullWidthDetected = full;
+                _pendingCount = 0;
+                _tintDirty = true;
+            }
+        }
+
+        /// <summary>
+        /// Brillo medio y desvio estandar de las zonas laterales (captura reducida 64x36).
+        /// </summary>
+        private void SideStats(RECT rect, out double mean, out double std, out double cMean, out double cStd)
+        {
+            mean = 0; std = 1; cMean = 0; cStd = 1;
+            const int W = 64, H = 36;
+            double cl = _settings.HoleLeftPct / 100.0;
+            double cr = (_settings.HoleLeftPct + _settings.HoleWidthPct) / 100.0;
+
+            IntPtr sdc = GetDC(IntPtr.Zero);
+            IntPtr mdc = CreateCompatibleDC(sdc);
+            IntPtr bmp = CreateCompatibleBitmap(sdc, W, H);
+            IntPtr old = SelectObject(mdc, bmp);
+            try
+            {
+                SetStretchBltMode(mdc, HALFTONE);
+                if (!StretchBlt(mdc, 0, 0, W, H, sdc, rect.Left, rect.Top, rect.Width, rect.Height, SRCCOPY)) return;
+
+                double sum = 0, sum2 = 0; int n = 0;
+                double csum = 0, csum2 = 0; int cn = 0;
+                for (int x = 0; x < W; x++)
+                {
+                    double fx = (x + 0.5) / W;
+                    bool isCenter = fx >= cl && fx < cr;
+                    for (int y = 0; y < H; y++)
+                    {
+                        uint p = GetPixel(mdc, x, y);
+                        double l = (0.2126 * (p & 0xFF) + 0.7152 * ((p >> 8) & 0xFF) + 0.0722 * ((p >> 16) & 0xFF)) / 255.0;
+                        if (isCenter) { csum += l; csum2 += l * l; cn++; }
+                        else { sum += l; sum2 += l * l; n++; }
+                    }
+                }
+                if (n > 0)
+                {
+                    mean = sum / n;
+                    std = Math.Sqrt(Math.Max(0, sum2 / n - mean * mean));
+                }
+                if (cn > 0)
+                {
+                    cMean = csum / cn;
+                    cStd = Math.Sqrt(Math.Max(0, csum2 / cn - cMean * cMean));
+                }
+            }
+            finally
+            {
+                SelectObject(mdc, old);
+                DeleteObject(bmp);
+                DeleteDC(mdc);
+                ReleaseDC(IntPtr.Zero, sdc);
+            }
+        }
+
+        private static int ColorDiff(uint a, uint b)
+        {
+            return Math.Abs((int)(a & 0xFF) - (int)(b & 0xFF))
+                 + Math.Abs((int)((a >> 8) & 0xFF) - (int)((b >> 8) & 0xFF))
+                 + Math.Abs((int)((a >> 16) & 0xFF) - (int)((b >> 16) & 0xFF));
+        }
+
+        /// <summary>
+        /// Porcentaje de filas donde hay un corte vertical fuerte en la columna x
+        /// (comparado con la variacion normal a cada lado).
+        /// </summary>
+        private static double EdgeHitRatio(int x, int top, int height)
+        {
+            const int W = 24;
+            IntPtr sdc = GetDC(IntPtr.Zero);
+            IntPtr mdc = CreateCompatibleDC(sdc);
+            IntPtr bmp = CreateCompatibleBitmap(sdc, W, height);
+            IntPtr old = SelectObject(mdc, bmp);
+            try
+            {
+                BitBlt(mdc, 0, 0, W, height, sdc, x - W / 2, top, SRCCOPY);
+                int rows = 0, hits = 0;
+                for (int y = 4; y < height - 4; y += 6)
+                {
+                    rows++;
+                    uint l2 = GetPixel(mdc, 3, y);
+                    uint l1 = GetPixel(mdc, 9, y);
+                    uint r1 = GetPixel(mdc, 15, y);
+                    uint r2 = GetPixel(mdc, 21, y);
+                    int e = ColorDiff(l1, r1);
+                    int rf = Math.Max(ColorDiff(l2, l1), ColorDiff(r1, r2));
+                    if (e > 30 && e > 2 * rf + 10) hits++;
+                }
+                return rows > 0 ? (double)hits / rows : 0;
+            }
+            finally
+            {
+                SelectObject(mdc, old);
+                DeleteObject(bmp);
+                DeleteDC(mdc);
+                ReleaseDC(IntPtr.Zero, sdc);
+            }
+        }
+
+        private void SetSidesOnly(bool enable)
+        {
+            _settings.SidesOnly = enable;
+            _settings.Save();
+            _tintDirty = true;
+            UpdateTintGeometry(Width, Height);
+        }
+
         private void OpacitySlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
             int percent = (int)Math.Round(e.NewValue);
@@ -624,8 +1243,7 @@ namespace UmamusumeDarkMode
                 _controlBar.OpacityText.Text = $"{percent}%";
             }
 
-            byte alpha = (byte)Math.Round(255 * (percent / 100.0));
-            Background = new SolidColorBrush(Color.FromArgb(alpha, 0, 0, 0));
+            if (!_settings.AdaptiveFlash) { _sidesCur = percent / 100.0; ApplyBrushes(); }
 
             _settings.Opacity = percent;
             _settings.Save();
@@ -1015,6 +1633,20 @@ namespace UmamusumeDarkMode
         public TextBlock VolumeText { get; }
         public CheckBox MuteCheckbox { get; }
         public CheckBox AutostartCheckbox { get; }
+        public CheckBox SidesOnlyCheckbox { get; }
+        public event Action? HideRequested;
+        public event Action? ColorCycleRequested;
+        public Slider CenterSlider { get; }
+        public TextBlock CenterText { get; }
+        public CheckBox AdaptiveCheckbox { get; }
+        public Slider StrengthSlider { get; }
+        public TextBlock StrengthText { get; }
+        private readonly TextBlock _colorText;
+
+        public void SetColorName(string name)
+        {
+            _colorText.Text = "Color: " + name + "  \u25B8";
+        }
 
         private readonly Border _mainBorder;
         private readonly StackPanel _rootStack;
@@ -1035,7 +1667,7 @@ namespace UmamusumeDarkMode
 
             try
             {
-                Icon = BitmapFrame.Create(new Uri("pack://application:,,,/assets/umamusumedarkmode.ico"));
+                Icon = BitmapFrame.Create(new Uri("pack://application:,,,/assets/app.ico"));
             }
             catch { }
 
@@ -1075,7 +1707,7 @@ namespace UmamusumeDarkMode
             // Opacity Section
             var moonIcon = new TextBlock
             {
-                Text = "🌙",
+                Text = "\U0001F319",
                 FontSize = 11,
                 Foreground = Brushes.White,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -1117,7 +1749,7 @@ namespace UmamusumeDarkMode
             // Volume Section
             var speakerIcon = new TextBlock
             {
-                Text = "🔊",
+                Text = "\U0001F50A",
                 FontSize = 11,
                 Foreground = Brushes.White,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -1153,6 +1785,24 @@ namespace UmamusumeDarkMode
             topRow.Children.Add(VolumeSlider);
             topRow.Children.Add(VolumeText);
 
+            var hideButton = new TextBlock
+            {
+                Text = "\u2014",
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(Color.FromRgb(0xBB, 0xBB, 0xBB)),
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0),
+                Cursor = System.Windows.Input.Cursors.Hand,
+                ToolTip = "Ocultar en la bandeja"
+            };
+            hideButton.MouseLeftButtonUp += (s, e) =>
+            {
+                HideRequested?.Invoke();
+                e.Handled = true;
+            };
+            topRow.Children.Add(hideButton);
+
             // Expandable Options Panel (attached dynamically on expansion)
             _optionsPanel = new StackPanel
             {
@@ -1169,7 +1819,7 @@ namespace UmamusumeDarkMode
 
             MuteCheckbox = new CheckBox
             {
-                Content = "Mute on focus loss",
+                Content = "Silenciar al perder el foco",
                 Foreground = new SolidColorBrush(Color.FromRgb(0xEE, 0xEE, 0xEE)),
                 FontSize = 11,
                 Margin = new Thickness(2, 2, 2, 3),
@@ -1178,7 +1828,7 @@ namespace UmamusumeDarkMode
 
             AutostartCheckbox = new CheckBox
             {
-                Content = "Autostart with Windows",
+                Content = "Iniciar con Windows",
                 Foreground = new SolidColorBrush(Color.FromRgb(0xEE, 0xEE, 0xEE)),
                 FontSize = 11,
                 Margin = new Thickness(2, 2, 2, 2),
@@ -1188,6 +1838,72 @@ namespace UmamusumeDarkMode
             _optionsPanel.Children.Add(divider);
             _optionsPanel.Children.Add(MuteCheckbox);
             _optionsPanel.Children.Add(AutostartCheckbox);
+
+            SidesOnlyCheckbox = new CheckBox
+            {
+                Content = "Solo oscurecer laterales (Ctrl+Alt+D)",
+                Foreground = new SolidColorBrush(Color.FromRgb(0xEE, 0xEE, 0xEE)),
+                FontSize = 11,
+                Margin = new Thickness(2, 2, 2, 2),
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            _optionsPanel.Children.Add(SidesOnlyCheckbox);
+
+            var optFg = new SolidColorBrush(Color.FromRgb(0xEE, 0xEE, 0xEE));
+
+            // Nivel del centro
+            var centerRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 5, 2, 2) };
+            centerRow.Children.Add(new TextBlock { Text = "Centro", FontSize = 11, Foreground = optFg, Width = 70, VerticalAlignment = VerticalAlignment.Center });
+            CenterSlider = new Slider { Width = 90, Height = 18, Minimum = 0, Maximum = 90, SmallChange = 1, LargeChange = 5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) };
+            CenterText = new TextBlock { Text = "0%", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, Width = 30, VerticalAlignment = VerticalAlignment.Center };
+            centerRow.Children.Add(CenterSlider);
+            centerRow.Children.Add(CenterText);
+            _optionsPanel.Children.Add(centerRow);
+
+            // Suavizar destellos
+            AdaptiveCheckbox = new CheckBox
+            {
+                Content = "Suavizar destellos",
+                Foreground = optFg,
+                FontSize = 11,
+                Margin = new Thickness(2, 5, 2, 2),
+                Cursor = System.Windows.Input.Cursors.Hand
+            };
+            _optionsPanel.Children.Add(AdaptiveCheckbox);
+
+            var strengthRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(2, 2, 2, 2) };
+            strengthRow.Children.Add(new TextBlock { Text = "Intensidad", FontSize = 11, Foreground = optFg, Width = 70, VerticalAlignment = VerticalAlignment.Center });
+            StrengthSlider = new Slider { Width = 90, Height = 18, Minimum = 0, Maximum = 50, SmallChange = 1, LargeChange = 5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 4, 0) };
+            StrengthText = new TextBlock { Text = "25%", FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White, Width = 30, VerticalAlignment = VerticalAlignment.Center };
+            strengthRow.Children.Add(StrengthSlider);
+            strengthRow.Children.Add(StrengthText);
+            _optionsPanel.Children.Add(strengthRow);
+
+            // Color (clic para cambiar)
+            _colorText = new TextBlock
+            {
+                Text = "Color: Negro  \u25B8",
+                FontSize = 11,
+                Foreground = optFg,
+                Margin = new Thickness(2, 5, 2, 2),
+                Cursor = System.Windows.Input.Cursors.Hand,
+                ToolTip = "Clic para cambiar el color del tinte"
+            };
+            _colorText.MouseLeftButtonUp += (s, e) =>
+            {
+                ColorCycleRequested?.Invoke();
+                e.Handled = true;
+            };
+            _optionsPanel.Children.Add(_colorText);
+
+            _optionsPanel.Children.Add(new TextBlock
+            {
+                Text = "Ctrl+Alt+\u2191/\u2193 laterales \u00B7 +Shift centro \u00B7 Ctrl+Alt+H pausa",
+                FontSize = 9.5,
+                Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0x99, 0x99)),
+                Margin = new Thickness(2, 6, 2, 1)
+            });
+
 
             // ONLY topRow is added initially! _optionsPanel is added dynamically when expanded
             _rootStack.Children.Add(topRow);
@@ -1253,9 +1969,29 @@ namespace UmamusumeDarkMode
         public int Opacity { get; set; } = 40;
         public int Volume { get; set; } = 100;
 
+        // Modo "solo laterales": agujero sin oscurecer, en % del tamano de la ventana del juego.
+        // Valores medidos en 2560x1440 (vista del juego: x 197..1277, alto completo).
+        public bool SidesOnly { get; set; } = false;
+        public bool ShowControlBar { get; set; } = false;
+        public double HoleLeftPct { get; set; } = 7.7;
+        public double HoleTopPct { get; set; } = 0.0;
+        public double HoleWidthPct { get; set; } = 42.2;
+        public double HoleHeightPct { get; set; } = 100.0;
+
+        // Deteccion automatica de pantalla completa
+        public double SplitEdgeThreshold { get; set; } = 0.12;
+        public double UniformStdThreshold { get; set; } = 0.05;
+        public bool DebugDetect { get; set; } = false;
+
+        // Mejoras
+        public int CenterOpacity { get; set; } = 0;
+        public bool AdaptiveFlash { get; set; } = true;
+        public int AdaptiveStrength { get; set; } = 25;
+        public int TintColor { get; set; } = 0;
+
         private static string SettingsFilePath => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "UmamusumeDarkMode",
+            "UmaNight",
             "settings.json"
         );
 
@@ -1275,7 +2011,20 @@ namespace UmamusumeDarkMode
             return new AppSettings();
         }
 
+        private readonly object _saveLock = new object();
+        private System.Threading.Timer? _saveTimer;
+
+        /// <summary>Programa un guardado en 400 ms (agrupa cambios seguidos).</summary>
         public void Save()
+        {
+            lock (_saveLock)
+            {
+                _saveTimer ??= new System.Threading.Timer(_ => SaveNow(), null, Timeout.Infinite, Timeout.Infinite);
+                _saveTimer.Change(400, Timeout.Infinite);
+            }
+        }
+
+        public void SaveNow()
         {
             try
             {
@@ -1286,7 +2035,10 @@ namespace UmamusumeDarkMode
                     Directory.CreateDirectory(dir);
                 }
                 string json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(path, json);
+                lock (_saveLock)
+                {
+                    File.WriteAllText(path, json);
+                }
             }
             catch { }
         }
@@ -1302,7 +2054,7 @@ namespace UmamusumeDarkMode
         {
             return Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.Startup),
-                "UmamusumeDarkMode.lnk"
+                "UmaNight.lnk"
             );
         }
 
@@ -1316,7 +2068,7 @@ namespace UmamusumeDarkMode
                 return processPath;
             }
 
-            string candidate = Path.Combine(AppContext.BaseDirectory, "UmamusumeDarkMode.exe");
+            string candidate = Path.Combine(AppContext.BaseDirectory, "UmaNight.exe");
             if (File.Exists(candidate))
             {
                 return candidate;
@@ -1389,7 +2141,7 @@ namespace UmamusumeDarkMode
                 {
                     shortcut.TargetPath = exePath;
                     shortcut.WorkingDirectory = dir;
-                    shortcut.Description = "Umamusume Dark Mode Overlay";
+                    shortcut.Description = "Uma Night";
                     shortcut.Save();
                 }
                 else

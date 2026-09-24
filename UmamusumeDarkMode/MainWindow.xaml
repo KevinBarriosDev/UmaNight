@@ -1,15 +1,15 @@
-<Window x:Class="UmamusumeDarkMode.MainWindow"
+﻿<Window x:Class="UmamusumeDarkMode.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:UmamusumeDarkMode"
         mc:Ignorable="d"
-        Title="Umamusume Dark Mode"
-        Icon="assets/umamusumedarkmode.ico"
+        Title="Uma Night"
+        Icon="assets/app.ico"
         WindowStyle="None"
         AllowsTransparency="True"
-        Background="#66000000"
+        Background="Transparent"
         Topmost="True"
         ShowInTaskbar="False"
         ResizeMode="NoResize"
@@ -17,5 +17,5 @@
         Focusable="False"
         Visibility="Hidden"
         Left="0" Top="0" Width="100" Height="100">
-    <Grid IsHitTestVisible="False" />
+    <Grid IsHitTestVisible="False"><Path x:Name="TintPath" /><Path x:Name="CenterPath" /></Grid>
 </Window>

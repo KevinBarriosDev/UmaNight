@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -6,14 +6,21 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
-    <ApplicationIcon>assets\umamusumedarkmode.ico</ApplicationIcon>
-	<IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <AssemblyName>UmaNight</AssemblyName>
+    <Product>Uma Night</Product>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+
+  <!-- Icono: assets\custom.ico si existe (local, ignorado por git); si no, el icono original -->
+  <PropertyGroup>
+    <AppIconFile Condition="Exists('assets\custom.ico')">assets\custom.ico</AppIconFile>
+    <AppIconFile Condition="'$(AppIconFile)' == ''">assets\umamusumedarkmode.ico</AppIconFile>
+    <ApplicationIcon>$(AppIconFile)</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
-    <Resource Include="assets\umamusumedarkmode.ico" />
-    <Resource Include="assets\umamusumedarkmode.jpg" />
-    <None Include="assets\**" CopyToOutputDirectory="PreserveNewest" />
+    <Resource Include="$(AppIconFile)" Link="assets\app.ico" />
+    <None Include="$(AppIconFile)" Link="assets\app.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
