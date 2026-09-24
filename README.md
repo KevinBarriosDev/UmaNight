@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="UmamusumeDarkMode/assets/umanight-256.png" width="128" alt="Uma Night">
+</p>
+
 <h1 align="center">Uma Night</h1>
 
 <p align="center">
@@ -103,5 +107,6 @@ MIT, igual que el [proyecto original](https://github.com/mayiflex/UmamusumeDarkM
 
 - Copyright del código original: mayiflex.
 - Modificaciones de este fork: Kevin Barrios.
+- CrÃ©ditos completos en [CREDITS.md](CREDITS.md).
 
 Umamusume: Pretty Derby es marca de Cygames, Inc. Este proyecto no está afiliado ni respaldado por Cygames.

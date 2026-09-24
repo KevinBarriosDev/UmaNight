@@ -11,10 +11,8 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
   </PropertyGroup>
 
-  <!-- Icono: assets\custom.ico si existe (local, ignorado por git); si no, el icono original -->
   <PropertyGroup>
-    <AppIconFile Condition="Exists('assets\custom.ico')">assets\custom.ico</AppIconFile>
-    <AppIconFile Condition="'$(AppIconFile)' == ''">assets\umamusumedarkmode.ico</AppIconFile>
+    <AppIconFile>assets\umanight.ico</AppIconFile>
     <ApplicationIcon>$(AppIconFile)</ApplicationIcon>
   </PropertyGroup>
 

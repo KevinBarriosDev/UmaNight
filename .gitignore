@@ -361,7 +361,3 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
-# Icono personalizado local (no se publica)
-UmamusumeDarkMode/assets/custom.ico
-custom-icon-256.png
-
