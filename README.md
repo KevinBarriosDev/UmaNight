@@ -40,11 +40,11 @@ Sobre esa base, en este fork agregamos las mejoras que se describen abajo. El pr
 | Mejora | Qué hace |
 | --- | --- |
 | **Solo oscurecer laterales** | En modo horizontal, oscurece el menú de la derecha y el margen izquierdo, y deja la vista central del juego como está. |
-| **Detección de pantalla completa** | En conciertos y carreras, donde el juego ocupa todo el ancho, detecta el cambio de layout y saca el tinte de los costados. Distingue las pantallas de carga ("Connecting") para no confundirlas con un concierto. |
+| **Detección de pantalla completa** | En conciertos y carreras, donde el juego ocupa todo el ancho, detecta el cambio de layout y saca el tinte de los costados. Reconoce la columna de pestañas de la derecha (aunque aparezca atenuada) para no confundir las pantallas de carga con un concierto. |
 | **Suavizar destellos** | Mide el brillo real del juego 10 veces por segundo y oscurece un poco más cuando aparece mucho blanco. Sube rápido y baja lento, así que el parpadeo del Log y de los fondos blancos queda amortiguado. Intensidad regulable. |
 | **Nivel propio para el centro** | Un slider aparte para la zona del juego (por defecto 0%). En pantalla completa se aplica a todo. |
 | **Color del tinte** | Negro, Gris cálido, Ámbar o Azul noche. |
-| **Sigue activo al perder el foco** | Si hacés clic en otro monitor, el tinte se mantiene, pero se ubica justo encima del juego para no oscurecer otras ventanas que pongas delante. |
+| **Sigue activo al perder el foco** | Si hacés clic en otro monitor, el tinte se mantiene y no parpadea al volver al juego. Solo si ponés una ventana delante del juego se ubica debajo de ella para no oscurecerla. |
 | **Barra en la bandeja** | La barra de control arranca oculta y se muestra u oculta desde el icono de la bandeja o con el botón "—". |
 | **Atajos de teclado** | Ver la tabla de abajo. |
 | **Instancia única** | Si se abre dos veces, la segunda copia se cierra sola. |
@@ -62,7 +62,7 @@ Sobre esa base, en este fork agregamos las mejoras que se describen abajo. El pr
 ## Cómo funciona por dentro
 
 - **Laterales:** el overlay dibuja un rectángulo oscuro con un "agujero" donde está la vista del juego. La posición del agujero se define en porcentajes del tamaño de la ventana (`HoleLeftPct`, `HoleWidthPct`…), así que se puede calibrar desde la configuración.
-- **Detección de pantalla completa:** cada 0,4 s se miran los dos bordes de la vista central. En el menú hay un corte vertical marcado entre el juego y los laterales; en un concierto la imagen sigue de largo. Para no confundirse con pantallas lisas (cargas y transiciones), también mide qué tan uniformes son el centro y los costados. Necesita varias lecturas seguidas antes de cambiar de modo, para no parpadear.
+- **Detección de pantalla completa:** cada 0,4 s se miran los dos bordes de la vista central. En el menú hay un corte vertical marcado entre el juego y los laterales; en un concierto la imagen sigue de largo. Para no confundirse con pantallas de carga, también compara la columna de pestañas de la derecha con una "huella" tomada en el menú (correlación normalizada, así tolera que aparezca atenuada) y mide qué tan uniformes son el centro y los costados. Necesita varias lecturas seguidas antes de cambiar de modo, para no parpadear.
 - **Medir sin verse a sí mismo:** las ventanas del overlay se excluyen de las capturas de pantalla (`WDA_EXCLUDEFROMCAPTURE`). Así la app puede mirar el juego sin su propio tinte encima. Como efecto secundario, **el oscurecido no aparece en capturas ni en OBS/Discord**, aunque vos sí lo veas en el monitor.
 - **Suavizado:** el brillo se mide sobre una captura reducida a 64×36 píxeles, y el nivel del tinte se acerca al objetivo con curvas exponenciales distintas para subir y para bajar.
 
@@ -94,6 +94,7 @@ Se guarda en `%LocalAppData%\UmaNight\settings.json`. Algunos valores que se pue
 | --- | --- |
 | `HoleLeftPct`, `HoleWidthPct`, `HoleTopPct`, `HoleHeightPct` | Posición de la zona central sin oscurecer, en % de la ventana. Calibrado para 2560×1440. |
 | `SplitEdgeThreshold` | Sensibilidad de la detección de pantalla completa (por defecto 0.12). |
+| `SidebarMatchThreshold` | Similitud mínima (0–1) para reconocer la columna de pestañas (por defecto 0.5). |
 | `UniformStdThreshold` | Umbral para considerar una pantalla "lisa", como una carga (por defecto 0.05). |
 | `DebugDetect` | `true` para registrar las mediciones en `detect.log`. |
 
