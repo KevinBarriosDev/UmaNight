@@ -231,6 +231,10 @@ namespace UmamusumeDarkMode
         [DllImport("user32.dll")]
         private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
 
+        [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")]
+        private static extern int DwmGetWindowAttributeInt(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+        private const int DWMWA_CLOAKED = 14;
+
         [DllImport("user32.dll")]
         private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
 
@@ -291,6 +295,11 @@ namespace UmamusumeDarkMode
         private bool _fullWidthDetected = false;
         private int _pendingCount = 0;
         private bool _wasFocused = false;
+        // Sin foco: solo bajamos el overlay si otra ventana tapa de verdad el juego
+        private bool _gameCovered = false;
+        private readonly Stopwatch _coverWatch = Stopwatch.StartNew();
+        // "Huella" de la columna de pestanas de la derecha (Jukebox, Sparks, Log...) tomada en el menu
+        private double[]? _sidebarRef;
         private readonly Stopwatch _focusGrace = Stopwatch.StartNew();
         private readonly Stopwatch _detectWatch = Stopwatch.StartNew();
 
@@ -798,7 +807,23 @@ namespace UmamusumeDarkMode
                 {
                     _controlBar.Visibility = Visibility.Hidden;
                 }
-                KeepOverlayJustAboveGame();
+                if (_coverWatch.ElapsedMilliseconds >= 100)
+                {
+                    _coverWatch.Restart();
+                    _gameCovered = SomethingCoversGame(rect);
+                }
+
+                if (_gameCovered)
+                {
+                    // Hay una ventana delante del juego: ponernos justo encima del juego, debajo de esa ventana
+                    KeepOverlayJustAboveGame();
+                }
+                else if (!Topmost)
+                {
+                    // Nada tapa el juego (ej: clic en el otro monitor): seguir "siempre encima".
+                    // Asi, al volver al juego no hay que reacomodar nada y no hay parpadeo.
+                    Topmost = true;
+                }
                 return;
             }
 
@@ -836,6 +861,38 @@ namespace UmamusumeDarkMode
             {
                 SetWindowPos(_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
+        }
+
+        /// <summary>
+        /// True si alguna ventana normal (visible, no minimizada, de otro programa) esta delante del juego
+        /// y se superpone con su area. Ignora ventanas "siempre encima" (barra de tareas, otros overlays).
+        /// </summary>
+        private bool SomethingCoversGame(RECT g)
+        {
+            if (_targetProcess == null) return false;
+            IntPtr h = GetWindow(_targetHwnd, GW_HWNDPREV);
+            int guard = 0;
+            while (h != IntPtr.Zero && guard++ < 1000)
+            {
+                if (h != _hwnd && h != _controlBarHwnd && IsWindowVisible(h) && !IsIconic(h))
+                {
+                    GetWindowThreadProcessId(h, out uint pid);
+                    bool topmost = (GetWindowLongPtr(h, GWL_EXSTYLE).ToInt64() & WS_EX_TOPMOST) != 0;
+                    bool cloaked = DwmGetWindowAttributeInt(h, DWMWA_CLOAKED, out int cl, sizeof(int)) == 0 && cl != 0;
+                    // Usar el marco visible (sin el borde invisible de ~8 px que Windows suma a las ventanas)
+                    if (pid != _targetProcess.Id && !topmost && !cloaked && TryGetWindowBounds(h, out RECT r))
+                    {
+                        int ox = Math.Min(r.Right, g.Right) - Math.Max(r.Left, g.Left);
+                        int oy = Math.Min(r.Bottom, g.Bottom) - Math.Max(r.Top, g.Top);
+                        if (ox > 4 && oy > 4)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                h = GetWindow(h, GW_HWNDPREV);
+            }
+            return false;
         }
 
         /// <summary>
@@ -1083,7 +1140,23 @@ namespace UmamusumeDarkMode
 
             double rl = EdgeHitRatio(xl, rect.Top, rect.Height);
             double rr = EdgeHitRatio(xr, rect.Top, rect.Height);
-            bool full = Math.Max(rl, rr) < _settings.SplitEdgeThreshold;
+            double edge = Math.Max(rl, rr);
+
+            // Columna de pestanas de la derecha: si se parece a la que vimos en el menu, no es pantalla completa.
+            // Se compara con correlacion, asi que tolera que aparezca atenuada o mas clara (pantallas de carga).
+            double ncc = double.NaN;
+            double[]? side = CaptureGray(rect, _settings.SidebarLeftPct / 100.0, 1.0, 6, 48);
+            if (side != null)
+            {
+                if (edge >= _settings.SplitEdgeThreshold * 3 && Variance(side) > 0.0005)
+                {
+                    _sidebarRef = side; // estado claramente "menu": actualizar la referencia
+                }
+                if (_sidebarRef != null) ncc = Ncc(side, _sidebarRef);
+            }
+            bool sidebarPresent = !double.IsNaN(ncc) && ncc >= _settings.SidebarMatchThreshold;
+
+            bool full = edge < _settings.SplitEdgeThreshold && !sidebarPresent;
 
             // Pantallas de carga / transiciones: laterales casi lisos (todo blanco o todo negro).
             // Ahi no se puede saber el layout por los bordes.
@@ -1096,7 +1169,7 @@ namespace UmamusumeDarkMode
                 try
                 {
                     string log = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "UmaNight", "detect.log");
-                    File.AppendAllText(log, $"{DateTime.Now:HH:mm:ss.fff} L={rl:F2} R={rr:F2} std={sideStd:F3} mean={sideMean:F2} cstd={centerStd:F3} cmean={centerMean:F2} uniform={uniform} full={full} actual={_fullWidthDetected}\n");
+                    File.AppendAllText(log, $"{DateTime.Now:HH:mm:ss.fff} L={rl:F2} R={rr:F2} std={sideStd:F3} mean={sideMean:F2} cstd={centerStd:F3} cmean={centerMean:F2} ncc={ncc:F2} uniform={uniform} full={full} actual={_fullWidthDetected}\n");
                 }
                 catch { }
             }
@@ -1180,6 +1253,69 @@ namespace UmamusumeDarkMode
                 DeleteDC(mdc);
                 ReleaseDC(IntPtr.Zero, sdc);
             }
+        }
+
+        /// <summary>
+        /// Captura una franja vertical del juego (de xFrom a xTo, en fraccion del ancho) reducida a w x h, en escala de grises.
+        /// </summary>
+        private static double[]? CaptureGray(RECT rect, double xFrom, double xTo, int w, int h)
+        {
+            int sx = rect.Left + (int)Math.Round(rect.Width * xFrom);
+            int sw = (int)Math.Round(rect.Width * (xTo - xFrom));
+            if (sw <= 0 || rect.Height <= 0) return null;
+
+            IntPtr sdc = GetDC(IntPtr.Zero);
+            IntPtr mdc = CreateCompatibleDC(sdc);
+            IntPtr bmp = CreateCompatibleBitmap(sdc, w, h);
+            IntPtr old = SelectObject(mdc, bmp);
+            try
+            {
+                SetStretchBltMode(mdc, HALFTONE);
+                if (!StretchBlt(mdc, 0, 0, w, h, sdc, sx, rect.Top, sw, rect.Height, SRCCOPY)) return null;
+                var result = new double[w * h];
+                for (int y = 0; y < h; y++)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        uint p = GetPixel(mdc, x, y);
+                        result[y * w + x] = (0.2126 * (p & 0xFF) + 0.7152 * ((p >> 8) & 0xFF) + 0.0722 * ((p >> 16) & 0xFF)) / 255.0;
+                    }
+                }
+                return result;
+            }
+            finally
+            {
+                SelectObject(mdc, old);
+                DeleteObject(bmp);
+                DeleteDC(mdc);
+                ReleaseDC(IntPtr.Zero, sdc);
+            }
+        }
+
+        private static double Variance(double[] a)
+        {
+            double m = 0, v = 0;
+            foreach (double x in a) m += x;
+            m /= a.Length;
+            foreach (double x in a) v += (x - m) * (x - m);
+            return v / a.Length;
+        }
+
+        /// <summary>Correlacion cruzada normalizada (-1..1). Ignora cambios de brillo/contraste.</summary>
+        private static double Ncc(double[] a, double[] b)
+        {
+            int n = Math.Min(a.Length, b.Length);
+            double ma = 0, mb = 0;
+            for (int i = 0; i < n; i++) { ma += a[i]; mb += b[i]; }
+            ma /= n; mb /= n;
+            double num = 0, da = 0, db = 0;
+            for (int i = 0; i < n; i++)
+            {
+                double x = a[i] - ma, y = b[i] - mb;
+                num += x * y; da += x * x; db += y * y;
+            }
+            if (da < 1e-9 || db < 1e-9) return 0;
+            return num / Math.Sqrt(da * db);
         }
 
         private static int ColorDiff(uint a, uint b)
@@ -1981,6 +2117,9 @@ namespace UmamusumeDarkMode
         // Deteccion automatica de pantalla completa
         public double SplitEdgeThreshold { get; set; } = 0.12;
         public double UniformStdThreshold { get; set; } = 0.05;
+        // Columna de pestanas de la derecha (en % del ancho) y similitud minima para reconocerla
+        public double SidebarLeftPct { get; set; } = 91.4;
+        public double SidebarMatchThreshold { get; set; } = 0.5;
         public bool DebugDetect { get; set; } = false;
 
         // Mejoras
