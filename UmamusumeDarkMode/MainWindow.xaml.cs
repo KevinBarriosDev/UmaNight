@@ -1140,7 +1140,9 @@ namespace UmamusumeDarkMode
 
             double rl = EdgeHitRatio(xl, rect.Top, rect.Height);
             double rr = EdgeHitRatio(xr, rect.Top, rect.Height);
-            double edge = Math.Max(rl, rr);
+            // Menu real = corte en los DOS bordes. Un solo corte puede ser parte de la escena
+            // (ej: resultados de carrera partidos al medio).
+            double edgeMin = Math.Min(rl, rr);
 
             // Columna de pestanas de la derecha: si se parece a la que vimos en el menu, no es pantalla completa.
             // Se compara con correlacion, asi que tolera que aparezca atenuada o mas clara (pantallas de carga).
@@ -1148,7 +1150,7 @@ namespace UmamusumeDarkMode
             double[]? side = CaptureGray(rect, _settings.SidebarLeftPct / 100.0, 1.0, 6, 48);
             if (side != null)
             {
-                if (edge >= _settings.SplitEdgeThreshold * 3 && Variance(side) > 0.0005)
+                if (edgeMin >= _settings.SplitEdgeThreshold * 2 && Variance(side) > 0.0005)
                 {
                     _sidebarRef = side; // estado claramente "menu": actualizar la referencia
                 }
@@ -1158,7 +1160,8 @@ namespace UmamusumeDarkMode
             bool sidebarKnown = side != null && _sidebarRef != null && Variance(side) > 0.0005;
             bool sidebarPresent = sidebarKnown && ncc >= _settings.SidebarMatchThreshold;
 
-            bool full = edge < _settings.SplitEdgeThreshold && !sidebarPresent;
+            // Si la columna se puede ver, decide ella. Si no, respaldo: corte en ambos bordes.
+            bool full = sidebarKnown ? !sidebarPresent : edgeMin < _settings.SplitEdgeThreshold;
 
             // Pantallas de carga / transiciones: laterales casi lisos (todo blanco o todo negro).
             // Ahi no se puede saber el layout por los bordes.
@@ -1178,7 +1181,7 @@ namespace UmamusumeDarkMode
 
             // Respaldo: si no hay corte en los bordes y tampoco se puede ver la columna de pestanas,
             // en una pantalla lisa (destello, fundido) no hay forma de saber el layout: mantener el estado.
-            if (uniform && !sidebarKnown && edge < _settings.SplitEdgeThreshold)
+            if (uniform && !sidebarKnown && edgeMin < _settings.SplitEdgeThreshold)
             {
                 _pendingCount = 0;
                 return;
