@@ -62,7 +62,7 @@ Sobre esa base, en este fork agregamos las mejoras que se describen abajo. El pr
 ## Cómo funciona por dentro
 
 - **Laterales:** el overlay dibuja un rectángulo oscuro con un "agujero" donde está la vista del juego. La posición del agujero se define en porcentajes del tamaño de la ventana (`HoleLeftPct`, `HoleWidthPct`…), así que se puede calibrar desde la configuración.
-- **Detección de pantalla completa:** cada 0,4 s se miran los dos bordes de la vista central. En el menú hay un corte vertical marcado entre el juego y los laterales; en un concierto la imagen sigue de largo. Para no confundirse con pantallas de carga, también compara la columna de pestañas de la derecha con una "huella" tomada en el menú (correlación normalizada, así tolera que aparezca atenuada) y mide qué tan uniformes son el centro y los costados. Necesita varias lecturas seguidas antes de cambiar de modo, para no parpadear.
+- **Detección de pantalla completa:** cada 0,4 s se miran los dos bordes de la vista central. En el menú hay un corte vertical marcado entre el juego y los laterales; en un concierto la imagen sigue de largo. Para no confundirse con pantallas de carga, también compara la columna de pestañas de la derecha con una "huella" tomada en el menú (correlación normalizada, así tolera que aparezca atenuada) y mide qué tan uniformes son el centro y los costados. Necesita varias lecturas seguidas antes de cambiar de modo, para no parpadear. También sigue midiendo cuando el juego no tiene el foco (por ejemplo, si estás en otro monitor), siempre que ninguna ventana lo tape.
 - **Medir sin verse a sí mismo:** las ventanas del overlay se excluyen de las capturas de pantalla (`WDA_EXCLUDEFROMCAPTURE`). Así la app puede mirar el juego sin su propio tinte encima. Como efecto secundario, **el oscurecido no aparece en capturas ni en OBS/Discord**, aunque vos sí lo veas en el monitor.
 - **Suavizado:** el brillo se mide sobre una captura reducida a 64×36 píxeles, y el nivel del tinte se acerca al objetivo con curvas exponenciales distintas para subir y para bajar.
 
@@ -93,6 +93,7 @@ Se guarda en `%LocalAppData%\UmaNight\settings.json`. Algunos valores que se pue
 | Clave | Para qué sirve |
 | --- | --- |
 | `HoleLeftPct`, `HoleWidthPct`, `HoleTopPct`, `HoleHeightPct` | Posición de la zona central sin oscurecer, en % de la ventana. Calibrado para 2560×1440. |
+| `HoleInsetPx` | Píxeles que el tinte se mete dentro de la vista del juego para tapar líneas finas en el borde (por defecto 1). |
 | `SplitEdgeThreshold` | Sensibilidad de la detección de pantalla completa (por defecto 0.12). |
 | `SidebarMatchThreshold` | Similitud mínima (0–1) para reconocer la columna de pestañas (por defecto 0.5). |
 | `UniformStdThreshold` | Umbral para considerar una pantalla "lisa", como una carga (por defecto 0.05). |

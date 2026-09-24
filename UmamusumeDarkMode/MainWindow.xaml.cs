@@ -348,6 +348,8 @@ namespace UmamusumeDarkMode
             _controlBar.OpacityText.Text = $"{_settings.Opacity}%";
             TintPath.Fill = _sidesBrush;
             CenterPath.Fill = _centerBrush;
+            RenderOptions.SetEdgeMode(TintPath, EdgeMode.Aliased);
+            RenderOptions.SetEdgeMode(CenterPath, EdgeMode.Aliased);
             _sidesCur = _settings.Opacity / 100.0;
             _centerCur = _settings.CenterOpacity / 100.0;
             if (_settings.TintColor < 0 || _settings.TintColor >= TintNames.Length) _settings.TintColor = 0;
@@ -787,11 +789,14 @@ namespace UmamusumeDarkMode
 
             // Solo medir con el juego en foco: si hay otra ventana encima, la captura la veria a ella
             // Al volver al juego (Alt+Tab, clic) esperar 1 s: los primeros cuadros suelen ser transiciones
-            if (isGameInFocus && !_wasFocused) { _focusGrace.Restart(); _pendingCount = 0; }
+            // Al ganar o perder el foco esperar 1 s: transiciones y la ventana de Alt+Tab confunden la medicion
+            if (isGameInFocus != _wasFocused) { _focusGrace.Restart(); _pendingCount = 0; }
             _wasFocused = isGameInFocus;
-            if (isGameInFocus && _focusGrace.ElapsedMilliseconds > 1000) DetectLayout(rect);
+            // Sin foco tambien se mide, siempre que ninguna ventana tape el juego (ej: estas en el otro monitor)
+            bool canMeasure = isGameInFocus || !_gameCovered;
+            if (canMeasure && _focusGrace.ElapsedMilliseconds > 1000) DetectLayout(rect);
             UpdateTintGeometry(targetWidth, targetHeight);
-            UpdateAdaptive(rect, isGameInFocus);
+            UpdateAdaptive(rect, canMeasure);
 
             if (Visibility != Visibility.Visible)
             {
@@ -956,11 +961,12 @@ namespace UmamusumeDarkMode
                     CenterPath.Data = full;
                     break;
                 default:
-                    var hole = new RectangleGeometry(new Rect(
-                        w * _settings.HoleLeftPct / 100.0,
-                        h * _settings.HoleTopPct / 100.0,
-                        w * _settings.HoleWidthPct / 100.0,
-                        h * _settings.HoleHeightPct / 100.0));
+                    double inset = Math.Max(0, _settings.HoleInsetPx);
+                    double hx0 = Math.Round(w * _settings.HoleLeftPct / 100.0) + inset;
+                    double hx1 = Math.Round(w * (_settings.HoleLeftPct + _settings.HoleWidthPct) / 100.0) - inset;
+                    double hy0 = Math.Round(h * _settings.HoleTopPct / 100.0);
+                    double hy1 = Math.Round(h * (_settings.HoleTopPct + _settings.HoleHeightPct) / 100.0);
+                    var hole = new RectangleGeometry(new Rect(hx0, hy0, Math.Max(0, hx1 - hx0), Math.Max(0, hy1 - hy0)));
                     hole.Freeze();
                     var sidesGeo = new CombinedGeometry(GeometryCombineMode.Exclude, full, hole);
                     sidesGeo.Freeze();
@@ -2109,9 +2115,11 @@ namespace UmamusumeDarkMode
         // Valores medidos en 2560x1440 (vista del juego: x 197..1277, alto completo).
         public bool SidesOnly { get; set; } = false;
         public bool ShowControlBar { get; set; } = false;
-        public double HoleLeftPct { get; set; } = 7.7;
+        public double HoleLeftPct { get; set; } = 7.6953125;
         public double HoleTopPct { get; set; } = 0.0;
-        public double HoleWidthPct { get; set; } = 42.2;
+        public double HoleWidthPct { get; set; } = 42.1875;
+        // Pixeles que el tinte se mete dentro de la vista del juego (tapa lineas finas en el borde)
+        public double HoleInsetPx { get; set; } = 1;
         public double HoleHeightPct { get; set; } = 100.0;
 
         // Deteccion automatica de pantalla completa
