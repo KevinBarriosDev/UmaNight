@@ -57,10 +57,9 @@ namespace UmamusumeDarkMode
         private const long WS_EX_TOPMOST = 0x00000008;
         private static readonly IntPtr HWND_TOP_Z = IntPtr.Zero;
 
-        // Excluye nuestras ventanas de las capturas de pantalla (para poder "ver" el juego sin el tinte)
-        private const uint WDA_EXCLUDEFROMCAPTURE = 0x00000011;
-        private const int SRCCOPY = 0x00CC0020;
-        private const int HALFTONE = 4;
+        // PrintWindow: solo el area cliente, con el contenido de DirectX (sin esto sale negro)
+        private const uint PW_CLIENTONLY = 0x1;
+        private const uint PW_RENDERFULLCONTENT = 0x2;
 
         // Hotkeys extra
         private const uint MOD_SHIFT = 0x0004;
@@ -236,9 +235,6 @@ namespace UmamusumeDarkMode
         private const int DWMWA_CLOAKED = 14;
 
         [DllImport("user32.dll")]
-        private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
-
-        [DllImport("user32.dll")]
         private static extern IntPtr GetDC(IntPtr hWnd);
 
         [DllImport("user32.dll")]
@@ -247,8 +243,33 @@ namespace UmamusumeDarkMode
         [DllImport("gdi32.dll")]
         private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BITMAPINFOHEADER
+        {
+            public int biSize;
+            public int biWidth;
+            public int biHeight;
+            public short biPlanes;
+            public short biBitCount;
+            public int biCompression;
+            public int biSizeImage;
+            public int biXPelsPerMeter;
+            public int biYPelsPerMeter;
+            public int biClrUsed;
+            public int biClrImportant;
+        }
+
         [DllImport("gdi32.dll")]
-        private static extern IntPtr CreateCompatibleBitmap(IntPtr hdc, int cx, int cy);
+        private static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFOHEADER pbmi, uint usage, out IntPtr ppvBits, IntPtr hSection, uint offset);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool GdiFlush();
+
+        [DllImport("user32.dll")]
+        private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdcBlt, uint nFlags);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
 
         [DllImport("gdi32.dll")]
         private static extern IntPtr SelectObject(IntPtr hdc, IntPtr h);
@@ -259,17 +280,6 @@ namespace UmamusumeDarkMode
         [DllImport("gdi32.dll")]
         private static extern bool DeleteDC(IntPtr hdc);
 
-        [DllImport("gdi32.dll")]
-        private static extern bool BitBlt(IntPtr hdc, int x, int y, int cx, int cy, IntPtr hdcSrc, int x1, int y1, int rop);
-
-        [DllImport("gdi32.dll")]
-        private static extern uint GetPixel(IntPtr hdc, int x, int y);
-
-        [DllImport("gdi32.dll")]
-        private static extern bool StretchBlt(IntPtr hdcDest, int xDest, int yDest, int wDest, int hDest, IntPtr hdcSrc, int xSrc, int ySrc, int wSrc, int hSrc, int rop);
-
-        [DllImport("gdi32.dll")]
-        private static extern int SetStretchBltMode(IntPtr hdc, int mode);
 
         #endregion
 
@@ -418,7 +428,6 @@ namespace UmamusumeDarkMode
             _controlBar.SidesOnlyCheckbox.Unchecked += (s, e) => SetSidesOnly(false);
 
             _controlBarHwnd = new WindowInteropHelper(_controlBar).EnsureHandle();
-            SetWindowDisplayAffinity(_controlBarHwnd, WDA_EXCLUDEFROMCAPTURE);
 
             // Loop 1: Checks for the game process every 15 seconds when not running
             _detectionTimer = new DispatcherTimer(DispatcherPriority.Background)
@@ -458,7 +467,6 @@ namespace UmamusumeDarkMode
             source?.AddHook(WndProc);
 
             RegisterHotKey(_hwnd, HOTKEY_ID_SIDES, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_D);
-            SetWindowDisplayAffinity(_hwnd, WDA_EXCLUDEFROMCAPTURE);
             RegisterHotKey(_hwnd, HOTKEY_SIDES_UP, MOD_CONTROL | MOD_ALT, VK_UP);
             RegisterHotKey(_hwnd, HOTKEY_SIDES_DOWN, MOD_CONTROL | MOD_ALT, VK_DOWN);
             RegisterHotKey(_hwnd, HOTKEY_CENTER_UP, MOD_CONTROL | MOD_ALT | MOD_SHIFT, VK_UP);
@@ -787,16 +795,14 @@ namespace UmamusumeDarkMode
             if (Math.Abs(Width - targetWidth) > 0.5) Width = targetWidth;
             if (Math.Abs(Height - targetHeight) > 0.5) Height = targetHeight;
 
-            // Solo medir con el juego en foco: si hay otra ventana encima, la captura la veria a ella
-            // Al volver al juego (Alt+Tab, clic) esperar 1 s: los primeros cuadros suelen ser transiciones
-            // Al ganar o perder el foco esperar 1 s: transiciones y la ventana de Alt+Tab confunden la medicion
+            // Se mide sobre la captura de la ventana del juego, asi que otras ventanas encima no molestan.
+            // Al ganar o perder el foco esperar 1 s: los primeros cuadros suelen ser transiciones
             if (isGameInFocus != _wasFocused) { _focusGrace.Restart(); _pendingCount = 0; }
             _wasFocused = isGameInFocus;
-            // Sin foco tambien se mide, siempre que ninguna ventana tape el juego (ej: estas en el otro monitor)
-            bool canMeasure = isGameInFocus || !_gameCovered;
-            if (canMeasure && _focusGrace.ElapsedMilliseconds > 1000) DetectLayout(rect);
+            if (_settings.SidesOnly || _settings.AdaptiveFlash) RequestFrame();
+            if (_focusGrace.ElapsedMilliseconds > 1000) DetectLayout(rect);
             UpdateTintGeometry(targetWidth, targetHeight);
-            UpdateAdaptive(rect, canMeasure);
+            UpdateAdaptive();
 
             if (Visibility != Visibility.Visible)
             {
@@ -982,16 +988,17 @@ namespace UmamusumeDarkMode
         /// Cada frame: mide el brillo (cada 100 ms) y acerca el nivel actual al objetivo.
         /// Sube rapido (0.12 s) y baja lento (0.9 s): los flashes blancos quedan amortiguados.
         /// </summary>
-        private void UpdateAdaptive(RECT rect, bool focused)
+        private void UpdateAdaptive()
         {
             double dt = Math.Min(0.5, _frameWatch.Elapsed.TotalSeconds);
             _frameWatch.Restart();
 
-            if (_settings.AdaptiveFlash && focused && _sampleWatch.ElapsedMilliseconds >= 100)
+            if (_settings.AdaptiveFlash && _sampleWatch.ElapsedMilliseconds >= 100)
             {
                 _sampleWatch.Restart();
-                if (MeasureLuminance(rect, out double lumSides, out double lumCenter, out double lumAll))
+                if (FreshStats() is FrameStats st)
                 {
+                    double lumSides = st.LumSides, lumCenter = st.LumCenter, lumAll = st.LumAll;
                     double k = _settings.AdaptiveStrength / 100.0;
                     switch (_mode)
                     {
@@ -1031,49 +1038,138 @@ namespace UmamusumeDarkMode
             return cur + (target - cur) * (1.0 - Math.Exp(-dt / tau));
         }
 
-        /// <summary>
-        /// Captura el juego reducido a 64x36 (el overlay esta excluido de la captura)
-        /// y calcula el brillo medio de laterales, centro y total.
-        /// </summary>
-        private bool MeasureLuminance(RECT rect, out double lumSides, out double lumCenter, out double lumAll)
-        {
-            lumSides = lumCenter = lumAll = 0;
-            if (rect.Width <= 0 || rect.Height <= 0) return false;
+        // ================= Captura del juego =================
 
-            const int W = 64, H = 36;
+        /// <summary>Mediciones de un cuadro del juego (se calculan en segundo plano).</summary>
+        private sealed class FrameStats
+        {
+            public long Time;
+            public double LumSides, LumCenter, LumAll;
+            public double SideStd = 1, SideMean, CenterStd = 1, CenterMean;
+            public double EdgeL, EdgeR;
+            public double[]? Sidebar;
+        }
+
+        private FrameStats? _stats;
+        private int _captureBusy;
+        private readonly Stopwatch _captureWatch = Stopwatch.StartNew();
+
+        /// <summary>
+        /// Pide un cuadro nuevo cada 100 ms. Se captura la ventana del juego (PrintWindow), no la pantalla:
+        /// la medicion no ve el tinte ni las ventanas que tapen el juego, y el overlay no necesita
+        /// excluirse de las capturas (esa exclusion apagaba la grabacion de NVIDIA).
+        /// </summary>
+        private void RequestFrame()
+        {
+            if (_captureWatch.ElapsedMilliseconds < 100) return;
+            if (Interlocked.Exchange(ref _captureBusy, 1) == 1) return;
+            _captureWatch.Restart();
+
+            IntPtr hwnd = _targetHwnd;
             double cl = _settings.HoleLeftPct / 100.0;
             double cr = (_settings.HoleLeftPct + _settings.HoleWidthPct) / 100.0;
+            double sb = _settings.SidebarLeftPct / 100.0;
+            Task.Run(() =>
+            {
+                try
+                {
+                    FrameStats? s = CaptureStats(hwnd, cl, cr, sb);
+                    if (s != null) Volatile.Write(ref _stats, s);
+                }
+                catch { }
+                finally { Volatile.Write(ref _captureBusy, 0); }
+            });
+        }
 
+        /// <summary>Ultimas mediciones, solo si son recientes.</summary>
+        private FrameStats? FreshStats()
+        {
+            FrameStats? s = Volatile.Read(ref _stats);
+            return s != null && Environment.TickCount64 - s.Time < 300 ? s : null;
+        }
+
+        /// <summary>Acceso a los pixeles de la captura (BGRA, de arriba hacia abajo).</summary>
+        private readonly struct Pixels
+        {
+            private readonly IntPtr _bits;
+            public readonly int W, H;
+
+            public Pixels(IntPtr bits, int w, int h) { _bits = bits; W = w; H = h; }
+
+            public uint At(int x, int y) => (uint)Marshal.ReadInt32(_bits, (y * W + x) * 4);
+
+            public double Gray(int x, int y)
+            {
+                uint p = At(x, y);
+                return (0.2126 * ((p >> 16) & 0xFF) + 0.7152 * ((p >> 8) & 0xFF) + 0.0722 * (p & 0xFF)) / 255.0;
+            }
+        }
+
+        /// <summary>
+        /// Captura la ventana del juego y calcula todo lo que usan la deteccion y el suavizado de destellos.
+        /// </summary>
+        private static FrameStats? CaptureStats(IntPtr hwnd, double cl, double cr, double sidebarLeft)
+        {
+            if (!GetClientRect(hwnd, out RECT rc)) return null;
+            int w = rc.Width, h = rc.Height;
+            if (w < 64 || h < 48) return null;
+
+            var bi = new BITMAPINFOHEADER
+            {
+                biSize = Marshal.SizeOf<BITMAPINFOHEADER>(),
+                biWidth = w,
+                biHeight = -h, // de arriba hacia abajo
+                biPlanes = 1,
+                biBitCount = 32
+            };
             IntPtr sdc = GetDC(IntPtr.Zero);
             IntPtr mdc = CreateCompatibleDC(sdc);
-            IntPtr bmp = CreateCompatibleBitmap(sdc, W, H);
-            IntPtr old = SelectObject(mdc, bmp);
+            IntPtr bmp = CreateDIBSection(mdc, ref bi, 0, out IntPtr bits, IntPtr.Zero, 0);
+            IntPtr old = bmp != IntPtr.Zero ? SelectObject(mdc, bmp) : IntPtr.Zero;
             try
             {
-                SetStretchBltMode(mdc, HALFTONE);
-                if (!StretchBlt(mdc, 0, 0, W, H, sdc, rect.Left, rect.Top, rect.Width, rect.Height, SRCCOPY)) return false;
+                if (bmp == IntPtr.Zero || !PrintWindow(hwnd, mdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT)) return null;
+                GdiFlush();
+                var px = new Pixels(bits, w, h);
+                var s = new FrameStats { Time = Environment.TickCount64 };
 
-                double sumS = 0, sumC = 0; int nS = 0, nC = 0;
-                for (int x = 0; x < W; x++)
+                // Brillo medio y desvio de laterales y centro (grilla de 64x36)
+                const int GW = 64, GH = 36;
+                double[] grid = GrayGrid(px, 0, w, GW, GH)!;
+                double sum = 0, sum2 = 0, csum = 0, csum2 = 0;
+                int n = 0, cn = 0;
+                for (int x = 0; x < GW; x++)
                 {
-                    double fx = (x + 0.5) / W;
+                    double fx = (x + 0.5) / GW;
                     bool isCenter = fx >= cl && fx < cr;
-                    for (int y = 0; y < H; y++)
+                    for (int y = 0; y < GH; y++)
                     {
-                        uint p = GetPixel(mdc, x, y);
-                        double l = (0.2126 * (p & 0xFF) + 0.7152 * ((p >> 8) & 0xFF) + 0.0722 * ((p >> 16) & 0xFF)) / 255.0;
-                        if (isCenter) { sumC += l; nC++; } else { sumS += l; nS++; }
+                        double l = grid[y * GW + x];
+                        if (isCenter) { csum += l; csum2 += l * l; cn++; }
+                        else { sum += l; sum2 += l * l; n++; }
                     }
                 }
-                lumSides = nS > 0 ? sumS / nS : 0;
-                lumCenter = nC > 0 ? sumC / nC : 0;
-                lumAll = (sumS + sumC) / Math.Max(1, nS + nC);
-                return true;
+                if (n > 0)
+                {
+                    s.LumSides = s.SideMean = sum / n;
+                    s.SideStd = Math.Sqrt(Math.Max(0, sum2 / n - s.SideMean * s.SideMean));
+                }
+                if (cn > 0)
+                {
+                    s.LumCenter = s.CenterMean = csum / cn;
+                    s.CenterStd = Math.Sqrt(Math.Max(0, csum2 / cn - s.CenterMean * s.CenterMean));
+                }
+                s.LumAll = (sum + csum) / Math.Max(1, n + cn);
+
+                s.Sidebar = GrayGrid(px, (int)Math.Round(w * sidebarLeft), w, 6, 48);
+                s.EdgeL = EdgeHitRatio(px, (int)Math.Round(w * cl));
+                s.EdgeR = EdgeHitRatio(px, (int)Math.Round(w * cr));
+                return s;
             }
             finally
             {
-                SelectObject(mdc, old);
-                DeleteObject(bmp);
+                if (old != IntPtr.Zero) SelectObject(mdc, old);
+                if (bmp != IntPtr.Zero) DeleteObject(bmp);
                 DeleteDC(mdc);
                 ReleaseDC(IntPtr.Zero, sdc);
             }
@@ -1141,11 +1237,11 @@ namespace UmamusumeDarkMode
             if (_detectWatch.ElapsedMilliseconds < 400) return;
             _detectWatch.Restart();
 
-            int xl = rect.Left + (int)Math.Round(rect.Width * _settings.HoleLeftPct / 100.0);
-            int xr = rect.Left + (int)Math.Round(rect.Width * (_settings.HoleLeftPct + _settings.HoleWidthPct) / 100.0);
+            FrameStats? st = FreshStats();
+            if (st == null) return;
 
-            double rl = EdgeHitRatio(xl, rect.Top, rect.Height);
-            double rr = EdgeHitRatio(xr, rect.Top, rect.Height);
+            double rl = st.EdgeL;
+            double rr = st.EdgeR;
             // Menu real = corte en los DOS bordes. Un solo corte puede ser parte de la escena
             // (ej: resultados de carrera partidos al medio).
             double edgeMin = Math.Min(rl, rr);
@@ -1153,7 +1249,7 @@ namespace UmamusumeDarkMode
             // Columna de pestanas de la derecha: si se parece a la que vimos en el menu, no es pantalla completa.
             // Se compara con correlacion, asi que tolera que aparezca atenuada o mas clara (pantallas de carga).
             double ncc = double.NaN;
-            double[]? side = CaptureGray(rect, _settings.SidebarLeftPct / 100.0, 1.0, 6, 48);
+            double[]? side = st.Sidebar;
             if (side != null)
             {
                 if (edgeMin >= _settings.SplitEdgeThreshold * 2 && Variance(side) > 0.0005)
@@ -1171,7 +1267,7 @@ namespace UmamusumeDarkMode
 
             // Pantallas de carga / transiciones: laterales casi lisos (todo blanco o todo negro).
             // Ahi no se puede saber el layout por los bordes.
-            SideStats(rect, out double sideMean, out double sideStd, out double centerMean, out double centerStd);
+            double sideMean = st.SideMean, sideStd = st.SideStd, centerMean = st.CenterMean, centerStd = st.CenterStd;
             // Carga ("Connecting") o transicion: el centro queda liso (todo blanco) aunque el menu siga a la derecha
             bool uniform = sideStd < _settings.UniformStdThreshold || centerStd < _settings.UniformStdThreshold;
 
@@ -1209,93 +1305,30 @@ namespace UmamusumeDarkMode
         }
 
         /// <summary>
-        /// Brillo medio y desvio estandar de las zonas laterales (captura reducida 64x36).
+        /// Franja vertical de la captura (columnas x0 a x1) reducida a gw x gh en escala de grises.
+        /// Cada celda es el promedio de hasta 8x8 muestras.
         /// </summary>
-        private void SideStats(RECT rect, out double mean, out double std, out double cMean, out double cStd)
+        private static double[]? GrayGrid(Pixels px, int x0, int x1, int gw, int gh)
         {
-            mean = 0; std = 1; cMean = 0; cStd = 1;
-            const int W = 64, H = 36;
-            double cl = _settings.HoleLeftPct / 100.0;
-            double cr = (_settings.HoleLeftPct + _settings.HoleWidthPct) / 100.0;
-
-            IntPtr sdc = GetDC(IntPtr.Zero);
-            IntPtr mdc = CreateCompatibleDC(sdc);
-            IntPtr bmp = CreateCompatibleBitmap(sdc, W, H);
-            IntPtr old = SelectObject(mdc, bmp);
-            try
+            if (x1 - x0 < gw || px.H < gh) return null;
+            var result = new double[gw * gh];
+            for (int gy = 0; gy < gh; gy++)
             {
-                SetStretchBltMode(mdc, HALFTONE);
-                if (!StretchBlt(mdc, 0, 0, W, H, sdc, rect.Left, rect.Top, rect.Width, rect.Height, SRCCOPY)) return;
-
-                double sum = 0, sum2 = 0; int n = 0;
-                double csum = 0, csum2 = 0; int cn = 0;
-                for (int x = 0; x < W; x++)
+                int ya = gy * px.H / gh, yb = (gy + 1) * px.H / gh;
+                int sy = Math.Max(1, (yb - ya) / 8);
+                for (int gx = 0; gx < gw; gx++)
                 {
-                    double fx = (x + 0.5) / W;
-                    bool isCenter = fx >= cl && fx < cr;
-                    for (int y = 0; y < H; y++)
+                    int xa = x0 + gx * (x1 - x0) / gw, xb = x0 + (gx + 1) * (x1 - x0) / gw;
+                    int sx = Math.Max(1, (xb - xa) / 8);
+                    double sum = 0; int n = 0;
+                    for (int y = ya; y < yb; y += sy)
                     {
-                        uint p = GetPixel(mdc, x, y);
-                        double l = (0.2126 * (p & 0xFF) + 0.7152 * ((p >> 8) & 0xFF) + 0.0722 * ((p >> 16) & 0xFF)) / 255.0;
-                        if (isCenter) { csum += l; csum2 += l * l; cn++; }
-                        else { sum += l; sum2 += l * l; n++; }
+                        for (int x = xa; x < xb; x += sx) { sum += px.Gray(x, y); n++; }
                     }
-                }
-                if (n > 0)
-                {
-                    mean = sum / n;
-                    std = Math.Sqrt(Math.Max(0, sum2 / n - mean * mean));
-                }
-                if (cn > 0)
-                {
-                    cMean = csum / cn;
-                    cStd = Math.Sqrt(Math.Max(0, csum2 / cn - cMean * cMean));
+                    result[gy * gw + gx] = n > 0 ? sum / n : 0;
                 }
             }
-            finally
-            {
-                SelectObject(mdc, old);
-                DeleteObject(bmp);
-                DeleteDC(mdc);
-                ReleaseDC(IntPtr.Zero, sdc);
-            }
-        }
-
-        /// <summary>
-        /// Captura una franja vertical del juego (de xFrom a xTo, en fraccion del ancho) reducida a w x h, en escala de grises.
-        /// </summary>
-        private static double[]? CaptureGray(RECT rect, double xFrom, double xTo, int w, int h)
-        {
-            int sx = rect.Left + (int)Math.Round(rect.Width * xFrom);
-            int sw = (int)Math.Round(rect.Width * (xTo - xFrom));
-            if (sw <= 0 || rect.Height <= 0) return null;
-
-            IntPtr sdc = GetDC(IntPtr.Zero);
-            IntPtr mdc = CreateCompatibleDC(sdc);
-            IntPtr bmp = CreateCompatibleBitmap(sdc, w, h);
-            IntPtr old = SelectObject(mdc, bmp);
-            try
-            {
-                SetStretchBltMode(mdc, HALFTONE);
-                if (!StretchBlt(mdc, 0, 0, w, h, sdc, sx, rect.Top, sw, rect.Height, SRCCOPY)) return null;
-                var result = new double[w * h];
-                for (int y = 0; y < h; y++)
-                {
-                    for (int x = 0; x < w; x++)
-                    {
-                        uint p = GetPixel(mdc, x, y);
-                        result[y * w + x] = (0.2126 * (p & 0xFF) + 0.7152 * ((p >> 8) & 0xFF) + 0.0722 * ((p >> 16) & 0xFF)) / 255.0;
-                    }
-                }
-                return result;
-            }
-            finally
-            {
-                SelectObject(mdc, old);
-                DeleteObject(bmp);
-                DeleteDC(mdc);
-                ReleaseDC(IntPtr.Zero, sdc);
-            }
+            return result;
         }
 
         private static double Variance(double[] a)
@@ -1335,37 +1368,22 @@ namespace UmamusumeDarkMode
         /// Porcentaje de filas donde hay un corte vertical fuerte en la columna x
         /// (comparado con la variacion normal a cada lado).
         /// </summary>
-        private static double EdgeHitRatio(int x, int top, int height)
+        private static double EdgeHitRatio(Pixels px, int x)
         {
-            const int W = 24;
-            IntPtr sdc = GetDC(IntPtr.Zero);
-            IntPtr mdc = CreateCompatibleDC(sdc);
-            IntPtr bmp = CreateCompatibleBitmap(sdc, W, height);
-            IntPtr old = SelectObject(mdc, bmp);
-            try
+            if (x - 9 < 0 || x + 9 >= px.W) return 0;
+            int rows = 0, hits = 0;
+            for (int y = 4; y < px.H - 4; y += 6)
             {
-                BitBlt(mdc, 0, 0, W, height, sdc, x - W / 2, top, SRCCOPY);
-                int rows = 0, hits = 0;
-                for (int y = 4; y < height - 4; y += 6)
-                {
-                    rows++;
-                    uint l2 = GetPixel(mdc, 3, y);
-                    uint l1 = GetPixel(mdc, 9, y);
-                    uint r1 = GetPixel(mdc, 15, y);
-                    uint r2 = GetPixel(mdc, 21, y);
-                    int e = ColorDiff(l1, r1);
-                    int rf = Math.Max(ColorDiff(l2, l1), ColorDiff(r1, r2));
-                    if (e > 30 && e > 2 * rf + 10) hits++;
-                }
-                return rows > 0 ? (double)hits / rows : 0;
+                rows++;
+                uint l2 = px.At(x - 9, y);
+                uint l1 = px.At(x - 3, y);
+                uint r1 = px.At(x + 3, y);
+                uint r2 = px.At(x + 9, y);
+                int e = ColorDiff(l1, r1);
+                int rf = Math.Max(ColorDiff(l2, l1), ColorDiff(r1, r2));
+                if (e > 30 && e > 2 * rf + 10) hits++;
             }
-            finally
-            {
-                SelectObject(mdc, old);
-                DeleteObject(bmp);
-                DeleteDC(mdc);
-                ReleaseDC(IntPtr.Zero, sdc);
-            }
+            return rows > 0 ? (double)hits / rows : 0;
         }
 
         private void SetSidesOnly(bool enable)
